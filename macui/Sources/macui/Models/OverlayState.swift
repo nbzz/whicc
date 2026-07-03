@@ -507,7 +507,7 @@ final class OverlayState: ObservableObject {
         )
 
         withAnimation(.easeOut(duration: 0.18)) {
-            if let current = committed {
+            if let current = committed, current.id != caption.id {
                 history.append(current)
                 if history.count > maxHistory {
                     history.removeFirst(history.count - maxHistory)
