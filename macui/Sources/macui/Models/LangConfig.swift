@@ -91,6 +91,7 @@ final class LangConfig: ObservableObject {
 
     private let configPath: String
     private var fileWatcher: DispatchSourceFileSystemObject?
+    private var retryWatchWorkItem: DispatchWorkItem?
     private var fd: Int32 = -1
 
     init(outDir: String = AppPaths.runDir) {
@@ -104,8 +105,9 @@ final class LangConfig: ObservableObject {
     }
 
     deinit {
+        retryWatchWorkItem?.cancel()
         fileWatcher?.cancel()
-        if fd >= 0 { close(fd) }
+        fd = -1
     }
 
     // MARK: - Mutators
@@ -529,8 +531,8 @@ final class LangConfig: ObservableObject {
             logSave("encode failed: \(error)")
             return
         }
-        // 使用 .atomic 让系统在原 inode 上原地替换，
-        // 不 unlink inode，文件监视器能继续生效。
+        // 使用 .atomic 避免读到半截 JSON。atomic 写通常会 rename
+        // 新文件，文件监视器在 .rename 后会重新 open 当前路径。
         do {
             try data.write(to: URL(fileURLWithPath: configPath), options: .atomic)
         } catch {
@@ -552,17 +554,25 @@ final class LangConfig: ObservableObject {
 
     /// 试图打开文件 + 注册监视器。失败时排下一次重试。
     private func attemptStartWatching() {
-        fd = open(configPath, O_EVTONLY)
-        guard fd >= 0 else {
+        guard fileWatcher == nil else { return }
+
+        let newFD = open(configPath, O_EVTONLY)
+        guard newFD >= 0 else {
             scheduleRetry()
             return
         }
+        fd = newFD
         let src = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fd, eventMask: [.write, .rename], queue: .main
+            fileDescriptor: newFD, eventMask: [.write, .rename], queue: .main
         )
-        src.setEventHandler { [weak self] in self?.load() }
-        src.setCancelHandler { [weak self] in
-            if let fd = self?.fd, fd >= 0 { close(fd) }
+        src.setEventHandler { [weak self, weak src] in
+            self?.load()
+            if src?.data.contains(.rename) == true {
+                self?.restartWatchingRenamedFile()
+            }
+        }
+        src.setCancelHandler {
+            close(newFD)
         }
         src.resume()
         fileWatcher = src
@@ -572,9 +582,20 @@ final class LangConfig: ObservableObject {
     }
 
     private func scheduleRetry() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        retryWatchWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.retryWatchWorkItem = nil
             self?.attemptStartWatching()
         }
+        retryWatchWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: item)
+    }
+
+    private func restartWatchingRenamedFile() {
+        fileWatcher?.cancel()
+        fileWatcher = nil
+        fd = -1
+        scheduleRetry()
     }
 }
 
