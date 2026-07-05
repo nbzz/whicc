@@ -249,8 +249,17 @@ final class LangConfig: ObservableObject {
             translationReachable = nil
             return
         }
+        // URL 规范化:
+        // - 自动加 http:// 前缀(用户填 "127.0.0.1:1234")
+        // - strip 末尾 /,避免拼成 //health / //v1/models 双斜杠 — LM Studio
+        //   对 //health 不会 404,但日志会刷 "Unexpected endpoint" 警告
+        // 用 /v1/models 而不是 /health 探活: 跟 translator_hy_mt2.py 的
+        // _check_health 保持一致 — LM Studio/vLLM/Ollama 都暴露
+        // OpenAI 兼容的 /v1/models,且要求 data 非空 = 模型真的加载好了
+        // (/health 只测 server alive,刚启动还没加载模型时也返回 200)
         let url = translationUrl.hasPrefix("http") ? translationUrl : "http://\(translationUrl)"
-        guard let endpoint = URL(string: "\(url)/health") else {
+        let normalizedUrl = url.hasSuffix("/") ? String(url.dropLast()) : url
+        guard let endpoint = URL(string: "\(normalizedUrl)/v1/models") else {
             translationReachable = false
             return
         }
@@ -394,10 +403,13 @@ final class LangConfig: ObservableObject {
             translationFallbackReachable = nil
             return
         }
+        // 同样规范化:strip trailing /,探活走 /v1/models (跟 detectTranslation 同逻辑,
+        // 也跟 Python 端 translator_hy_mt2._check_health 一致)。
         let url = translationFallbackUrl.hasPrefix("http")
             ? translationFallbackUrl
             : "http://\(translationFallbackUrl)"
-        guard let endpoint = URL(string: "\(url)/health") else {
+        let normalizedUrl = url.hasSuffix("/") ? String(url.dropLast()) : url
+        guard let endpoint = URL(string: "\(normalizedUrl)/v1/models") else {
             translationFallbackReachable = false
             return
         }
