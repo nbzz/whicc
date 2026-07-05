@@ -603,6 +603,8 @@ final class LangConfig: ObservableObject {
 
 struct LangGroup: Identifiable {
     let id = UUID()
+    /// 组名(亚洲/欧洲/中东)走 LocalizedStringKey。NSMenu 中显示成 verbatim String,
+    /// 在 LanguageMenuButton 里调 NSLocalizedString() 显式查表。
     let name: String
     let langs: [LangItem]
 }

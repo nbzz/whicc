@@ -17,11 +17,13 @@ enum CaptionClipboard {
         var id: String { rawValue }
 
         /// Display name shown in the HUD popover menu.
+        /// LocalizedStringKey 让 NSMenuItem(title:) 字面量查表 — 但这里 title 是 String
+        /// 参数,所以用 NSLocalizedString() 显式查。
         var displayName: String {
             switch self {
-            case .translation: return "复制译文"
-            case .source:      return "复制原文"
-            case .both:        return "复制全部"
+            case .translation: return NSLocalizedString("复制译文", comment: "")
+            case .source:      return NSLocalizedString("复制原文", comment: "")
+            case .both:        return NSLocalizedString("复制全部", comment: "")
             }
         }
     }

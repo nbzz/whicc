@@ -25,10 +25,12 @@ struct LanguageMenuButton: View {
         let menu = NSMenu()
 
         for group in LANGUAGE_GROUPS {
-            let header = NSMenuItem(title: group.name, action: nil, keyEquivalent: "")
+            // 查表拿到本地化的 region 名 (亚洲 / Asia)
+            let localizedName = NSLocalizedString(group.name, value: group.name, comment: "Language region group")
+            let header = NSMenuItem(title: localizedName, action: nil, keyEquivalent: "")
             header.isEnabled = false
             header.attributedTitle = NSAttributedString(
-                string: group.name,
+                string: localizedName,
                 attributes: [
                     .font: NSFont.boldSystemFont(ofSize: 11),
                     .foregroundColor: NSColor.secondaryLabelColor,

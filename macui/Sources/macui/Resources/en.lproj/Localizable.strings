@@ -269,3 +269,13 @@
 "字体：" = "Font: ";
 "（点击切换）" = " (click to switch)";
 "词库 / 场景 / 事件 / 配置" = "Glossary / scene / events / settings";
+
+/* HUD Copy menu (CaptionClipboard.Format.displayName) */
+"复制译文" = "Copy translation";
+"复制原文" = "Copy source";
+"复制全部" = "Copy all";
+
+/* LANGUAGE_GROUPS region names (HUD 语言菜单 + Settings Picker Section header) */
+"亚洲" = "Asia";
+"欧洲" = "Europe";
+"中东" = "Middle East";

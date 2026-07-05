@@ -505,7 +505,9 @@ struct ServerPane: View {
             Picker(label, selection: binding) {
                 Text("自动检测").tag("auto")
                 ForEach(LANGUAGE_GROUPS) { group in
-                    Section(group.name) {
+                    // Section(header: LocalizedStringKey) 接受 key 直查表。
+                    // 用 NSLocalizedString() 拿到 String,再 init LocalizedStringKey(stringLiteral:)。
+                    Section(LocalizedStringKey(stringLiteral: NSLocalizedString(group.name, value: group.name, comment: "Language region group"))) {
                         ForEach(group.langs) { lang in
                             Text(lang.label).tag(lang.id)
                         }
