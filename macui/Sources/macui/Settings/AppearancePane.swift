@@ -56,8 +56,9 @@ struct AppearancePane: View {
     // MARK: - 通用：section header 右侧的"恢复默认"按钮
 
     /// 小图标按钮 ↺，hover 时显示 tooltip。点击 → 执行 `reset` 闭包。
+    /// `help` 走 LocalizedStringKey,传入中文字面量即自动本地化。
     @ViewBuilder
-    private func resetButton(help: String, action: @escaping () -> Void) -> some View {
+    private func resetButton(help: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: "arrow.counterclockwise")
                 .font(.system(size: 12, weight: .medium))
@@ -80,14 +81,16 @@ struct AppearancePane: View {
     /// 通用 slider row：左侧标签 + slider + 右侧读数。读数格式根据
     /// `valueKind` 自动选 0.00 / 0pt / 0%。
     private enum ValueKind { case opacity, radius, percent }
+    /// `label` / `help` 走 LocalizedStringKey,所以传入中文字面量即可自动本地化。
+    /// 之前都是 String,Text(label) / .help(help) 是 verbatim,本地化失效。
     @ViewBuilder
     private func valueRow(
-        label: String,
+        label: LocalizedStringKey,
         binding: Binding<Double>,
         range: ClosedRange<Double>,
         step: Double,
         kind: ValueKind,
-        help: String
+        help: LocalizedStringKey
     ) -> some View {
         HStack(spacing: 12) {
             Text(label)
@@ -304,7 +307,7 @@ struct AppearancePane: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(isFavorite ? "默认收藏" : "加入收藏（HUD 循环）")
+            .help(isFavorite ? LocalizedStringKey("默认收藏") : LocalizedStringKey("加入收藏（HUD 循环）"))
 
             // 字体名(点击 = 选中)。收藏是五角星独立按钮管的 —
             // 用户反馈"选中 ≠ 收藏"才符合预期。
@@ -417,8 +420,10 @@ struct AppearancePane: View {
         }
     }
 
+    /// `label` 走 LocalizedStringKey,传入中文字面量即自动本地化。
+    /// 之前是 String → Text(label) 是 verbatim,本地化失效。
     private func fontSizeRow(
-        label: String,
+        label: LocalizedStringKey,
         binding: Binding<CGFloat>,
         range: ClosedRange<CGFloat>,
         step: CGFloat

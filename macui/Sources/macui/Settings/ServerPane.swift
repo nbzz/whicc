@@ -162,8 +162,15 @@ struct ServerPane: View {
                             Label("已重启", systemImage: "checkmark.circle.fill")
                                 .foregroundColor(.green)
                         } else if case .failure(let err) = restartResult {
-                            Label("重启失败: \(err)", systemImage: "xmark.octagon.fill")
-                                .foregroundColor(.red)
+                            // 拆成本地化前缀 + verbatim 错误文本,让"重启失败:"走本地化表
+                            // 但 err (Python stderr 字符串) 保留原文。Label 的 builder init
+                            // 允许拼多个 Text。
+                            Label {
+                                Text("重启失败: ") + Text("\(err)")
+                            } icon: {
+                                Image(systemName: "xmark.octagon.fill")
+                            }
+                            .foregroundColor(.red)
                         } else {
                             Label("保存并重启翻译服务", systemImage: "arrow.clockwise")
                         }
@@ -401,16 +408,17 @@ struct ServerPane: View {
     /// true, TextField edits a local draft that auto-commits after
     /// 0.5s of inactivity; the LangConfig setter (which writes the
     /// file) only fires once per pause instead of once per keystroke.
+    /// `placeholder` / `help` / `label` 走 LocalizedStringKey,中文字面量即自动本地化。
     @ViewBuilder
     private func hostRow(
-        placeholder: String,
+        placeholder: LocalizedStringKey,
         icon: String,
         text: Binding<String>,
         reachable: Bool?,
         refresh: @escaping () -> Void,
-        help: String,
+        help: LocalizedStringKey,
         debounce: Bool,
-        label: String? = nil,
+        label: LocalizedStringKey? = nil,
         trailing: AnyView? = nil,
         onCommit: (() -> Void)? = nil
     ) -> some View {
@@ -481,11 +489,12 @@ struct ServerPane: View {
 
     /// 通用语言 picker 行:左侧标签 + 右侧 menu picker。menu picker
     /// 按 LANGUAGE_GROUPS 自动分组。
+    /// `label` / `help` 走 LocalizedStringKey,中文字面量即自动本地化。
     @ViewBuilder
     private func languagePickerRow(
-        label: String,
+        label: LocalizedStringKey,
         binding: Binding<String>,
-        help: String
+        help: LocalizedStringKey
     ) -> some View {
         HStack(spacing: 12) {
             Text(label)
@@ -529,12 +538,12 @@ struct ServerPane: View {
 // MARK: - Plain row (every keystroke commits)
 
 private struct PlainHostRow: View {
-    let placeholder: String
+    let placeholder: LocalizedStringKey
     let icon: String
     @Binding var text: String
     let reachable: Bool?
     let refresh: () -> Void
-    let help: String
+    let help: LocalizedStringKey
     let trailing: AnyView?
     /// 用户回车提交时触发,用于「改完 URL 自动 fetch 模型列表」场景。
     /// PlainHostRow 每次按键立即写回,没有 debounce,所以 onSubmit 是
@@ -591,13 +600,13 @@ private struct PlainHostRow: View {
 // of truth.
 
 private struct DebouncedHostRow: View {
-    let placeholder: String
+    let placeholder: LocalizedStringKey
     let icon: String
     let modelText: String
     let modelSetter: Binding<String>
     let reachable: Bool?
     let refresh: () -> Void
-    let help: String
+    let help: LocalizedStringKey
     let trailing: AnyView?
     /// debounce 0.5s 写回 setter 之后触发,用于「改完 URL 自动 fetch 模型列表」。
     /// 注意:DebouncedHostRow 每个按键都不触发 commit (waiting 0.5s),
@@ -714,11 +723,16 @@ private struct TranslationModelMenu: View {
                 Text("请先填写翻译服务地址")
             } else if fetched != true {
                 // 没拉过 / 拉失败 → 整个 dropdown 都是「重试」入口。
+                // 用 let titleKey: LocalizedStringKey 让 Label 走本地化表;
+                // 直接 Label(<ternary ? "a" : "b">, ...) 会推断成 String verbatim。
+                let titleKey: LocalizedStringKey = fetched == false
+                    ? "拉取失败 — 重试"
+                    : "正在获取模型…"
+                let iconName = fetched == false ? "arrow.clockwise" : "arrow.triangle.2.circlepath"
                 Button {
                     onFetch()
                 } label: {
-                    Label(fetched == false ? "拉取失败 — 重试" : "正在获取模型…",
-                          systemImage: fetched == false ? "arrow.clockwise" : "arrow.triangle.2.circlepath")
+                    Label(titleKey, systemImage: iconName)
                 }
             } else if models.isEmpty {
                 // 拉成功但该节点没暴露 /v1/models
@@ -782,7 +796,9 @@ private struct TranslationModelMenu: View {
         .help(helpText)
     }
 
-    private var displayText: String {
+    /// 改成 LocalizedStringKey,让 Text(displayText) / .help(helpText) 走本地化表。
+    /// 之前 String → Text(_:String) verbatim,中文 fallback 永远不变。
+    private var displayText: LocalizedStringKey {
         if urlIsEmpty {
             return "请先填写翻译服务地址"
         }
@@ -795,7 +811,11 @@ private struct TranslationModelMenu: View {
         if current.isEmpty {
             return "选择模型"
         }
-        return current
+        // current 是运行时模型 id (e.g. "mlx-community/Qwen3-ASR-0.6B-4bit") —
+        // 不参与本地化表,直接返回 verbatim。LocalizedStringKey 也是 ExpressibleByStringLiteral,
+        // 但这里强制用 Text(verbatim:) 走 verbatim 路径,避免被当 key 查表(查不到也只 fallback 到字面量)。
+        // 实际:return current 走 LocalizedStringKey 路径,查表不命中 → fallback 字面量 = current,等价 verbatim。
+        return LocalizedStringKey(stringLiteral: current)
     }
 
     private var displayColor: Color {
@@ -811,17 +831,20 @@ private struct TranslationModelMenu: View {
         return .primary
     }
 
-    private var helpText: String {
+    /// 返回 Text 而非 LocalizedStringKey,因为最后一条带 models.count 插值需要拼接
+    /// (verbatim 数字 + 本地化片段)。.help() 接收 Text 也 OK。
+    private var helpText: Text {
         if urlIsEmpty {
-            return "请先在上方填写翻译服务地址,失焦后会自动拉取该节点的模型列表"
+            return Text("请先在上方填写翻译服务地址,失焦后会自动拉取该节点的模型列表")
         }
         if fetched != true {
-            return "改完翻译服务地址后,失焦会自动拉取该节点的模型列表"
+            return Text("改完翻译服务地址后,失焦会自动拉取该节点的模型列表")
         }
         if models.isEmpty {
-            return "该节点未通过 /v1/models 返回任何模型"
+            return Text("该节点未通过 /v1/models 返回任何模型")
         }
-        return "已从外接翻译服务加载 \(models.count) 个模型,点击切换"
+        // 动态插值:数字 verbatim + 前缀/后缀本地化
+        return Text("已从外接翻译服务加载 ") + Text("\(models.count)") + Text(" 个模型,点击切换")
     }
 }
 
@@ -829,6 +852,7 @@ private struct TranslationModelMenu: View {
 /// 渲染 label (顶部字段名) + 占满宽度的下拉框。
 /// urlIsEmpty:绑定的 URL 为空时,UI 显式显示「请先填写翻译服务地址」
 /// (不让 fetched == nil 误显 spinner)。
+/// `label` 走 LocalizedStringKey,中文字面量即自动本地化。
 private func modelRow(
     icon: String,
     current: String,
@@ -836,7 +860,7 @@ private func modelRow(
     models: [String],
     onFetch: @escaping () -> Void,
     onPick: @escaping (String) -> Void,
-    label: String,
+    label: LocalizedStringKey,
     urlIsEmpty: Bool
 ) -> some View {
     VStack(alignment: .leading, spacing: 4) {

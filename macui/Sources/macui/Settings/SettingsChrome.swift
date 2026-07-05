@@ -32,13 +32,17 @@ struct SettingsCard<Content: View>: View {
 /// Section header:icon + title,可选 trailing slot。
 /// Generic over Trailing 保类型(避免 AnyView erasure),无 trailing 时
 /// 不强制包 AnyView(EmptyView)。
+///
+/// `title` 接受 `LocalizedStringKey`,所以调用方直接传中文 literal 即可,
+/// 系统 locale=en 时自动查 en.lproj/Localizable.strings 替换为英文;
+/// locale=zh 时 fallback 到代码字面量(中文)。
 struct SettingsSectionHeader<Trailing: View>: View {
     let icon: String
-    let title: String
+    let title: LocalizedStringKey
     let tint: Color
     let trailing: Trailing?
 
-    init(icon: String, title: String, tint: Color = .accentColor,
+    init(icon: String, title: LocalizedStringKey, tint: Color = .accentColor,
          @ViewBuilder trailing: () -> Trailing? = { nil }) {
         self.icon = icon
         self.title = title

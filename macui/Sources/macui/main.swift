@@ -378,7 +378,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        win.title = "设置"
+        // 窗口标题:Settings — 跟随系统 locale 自动切换中/英。
+        // NSWindow.title 是 String,得显式走 NSLocalizedString。
+        // 跟 SwiftUI 的 Text("...") 默认 LocalizedStringKey 不一样。
+        win.title = NSLocalizedString("settings_window_title", value: "设置", comment: "Settings window title")
         win.titlebarAppearsTransparent = true
         // 注意：不要设 win.titleVisibility = .hidden——
         // "设置"字样是用户识别"我在设置窗口里"的视觉锚点，去掉反而突兀。
@@ -453,14 +456,14 @@ let delegate = AppDelegate()
 let mainMenu = NSMenu()
 let appMenu = NSMenu()
 appMenu.addItem(
-    withTitle: "Preferences…",
+    withTitle: NSLocalizedString("menu_preferences", value: "Preferences…", comment: "Preferences menu item"),
     action: #selector(AppDelegate.openSettingsFromMenu),
     keyEquivalent: ","
 )
 appMenu.items.last?.target = delegate
 appMenu.addItem(.separator())
 appMenu.addItem(
-    withTitle: "Quit whicc",
+    withTitle: NSLocalizedString("menu_quit", value: "Quit whicc", comment: "Quit menu item"),
     action: #selector(NSApplication.terminate(_:)),
     keyEquivalent: "q"
 )
@@ -469,9 +472,9 @@ appMenuItem.submenu = appMenu
 mainMenu.addItem(appMenuItem)
 
 // File menu — ⌘W closes the key window (or quits if it's the subtitle panel).
-let fileMenu = NSMenu(title: "File")
+let fileMenu = NSMenu(title: NSLocalizedString("menu_file", value: "File", comment: "File menu title"))
 fileMenu.addItem(
-    withTitle: "Close",
+    withTitle: NSLocalizedString("menu_close", value: "Close", comment: "Close menu item"),
     action: #selector(AppDelegate.closeWindowFromMenu),
     keyEquivalent: "w"
 )
@@ -482,11 +485,11 @@ mainMenu.addItem(fileMenuItem)
 
 // Edit menu (standard text-editing shortcuts — TextField/TextEditor
 // inside the Settings window routes through these).
-let editMenu = NSMenu(title: "Edit")
-editMenu.addItem(withTitle: "Cut",        action: #selector(NSText.cut(_:)),        keyEquivalent: "x")
-editMenu.addItem(withTitle: "Copy",       action: #selector(NSText.copy(_:)),       keyEquivalent: "c")
-editMenu.addItem(withTitle: "Paste",      action: #selector(NSText.paste(_:)),      keyEquivalent: "v")
-editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+let editMenu = NSMenu(title: NSLocalizedString("menu_edit", value: "Edit", comment: "Edit menu title"))
+editMenu.addItem(withTitle: NSLocalizedString("menu_edit_cut", value: "Cut", comment: ""),        action: #selector(NSText.cut(_:)),        keyEquivalent: "x")
+editMenu.addItem(withTitle: NSLocalizedString("menu_edit_copy", value: "Copy", comment: ""),       action: #selector(NSText.copy(_:)),       keyEquivalent: "c")
+editMenu.addItem(withTitle: NSLocalizedString("menu_edit_paste", value: "Paste", comment: ""),      action: #selector(NSText.paste(_:)),      keyEquivalent: "v")
+editMenu.addItem(withTitle: NSLocalizedString("menu_edit_select_all", value: "Select All", comment: ""), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 let editMenuItem = NSMenuItem()
 editMenuItem.submenu = editMenu
 mainMenu.addItem(editMenuItem)

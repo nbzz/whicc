@@ -28,7 +28,8 @@ enum BilingualLayout: String, CaseIterable, Identifiable {
         }
     }
 
-    var help: String {
+    /// `help` 走 LocalizedStringKey 让 .help() 查表 (en locale 显示 "Translation on top")。
+    var help: LocalizedStringKey {
         switch self {
         case .translationTop: return "译文在上"
         case .sourceTop:      return "原文在上"
@@ -58,8 +59,8 @@ enum AudioSource: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// HUD chip 上显示的简短名（i18n 暂时 hardcode 中文）。
-    var displayName: String {
+    /// HUD chip 上显示的简短名 — LocalizedStringKey 让 Text() 查表。
+    var displayName: LocalizedStringKey {
         switch self {
         case .system: return "系统"
         case .mic:    return "麦克"
@@ -121,7 +122,8 @@ enum StartupStage: String, Equatable {
     case listening
 
     /// 显示文案。listening 后会被 banner 的"准备就绪"覆盖。
-    var displayText: String {
+    /// LocalizedStringKey 让 Text(headline) 在 en locale 显示 "Initializing whicc…"。
+    var displayText: LocalizedStringKey {
         switch self {
         case .initializing:      return "正在初始化 whicc…"
         case .launchingBackends: return "正在启动后端…"
@@ -687,12 +689,16 @@ final class OverlayState: ObservableObject {
         }
     }
 
+    /// status 字段 (来自 Python 后端) → LocalizedStringKey 显示文案。
+    /// 输入是 status code (status enum from JSONL),输出是给 setStatus() 的字面量。
+    /// setStatus() 内部用 verbatim String,但 LocalizedStringKey 自动转 StringLiteral
+    /// 在 .strings 表查不到时 fallback 到字面量 (中文),所以这条路径默认工作。
     private func mapStatusText(_ status: String) -> String {
         switch status {
-        case "loading_model": return "正在加载模型…"
-        case "ready":         return "模型就绪，等待音频…"
-        case "listening":     return "正在聆听…"
-        case "crash_recover": return "音频恢复中…"
+        case "loading_model": return String(localized: "正在加载模型…")
+        case "ready":         return String(localized: "模型就绪，等待音频…")
+        case "listening":     return String(localized: "正在聆听…")
+        case "crash_recover": return String(localized: "音频恢复中…")
         default:              return status
         }
     }

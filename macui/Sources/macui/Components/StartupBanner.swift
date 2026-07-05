@@ -63,7 +63,8 @@ struct StartupBanner: View {
     /// 主行文案:简洁一句话 + load time。
     /// - "准备就绪"              (listening 收到后)
     /// - summary.stage.displayText (Swift 启动阶段:初始化/启动后端/扫描模型…)
-    private var headline: String {
+    /// 返回 LocalizedStringKey 让 Text(headline) 查表。
+    private var headline: LocalizedStringKey {
         if summary.listening {
             return "准备就绪"
         } else {
@@ -75,18 +76,19 @@ struct StartupBanner: View {
     /// 用 detailParts 而不是拼成一行 banner 字符串,是因为 banner 主行
     /// 已经够直观,副行只是为了"想看细节时能看到"。
     /// Hermes 是 ✓/✗ 单字符,极短,放在末尾不抢眼。
+    /// 静态 "ASR 加载中" / "Hermes X" 改成 LocalizedStringKey。
     private var detailParts: [String] {
         var parts: [String] = []
         if let asr = summary.asr, !asr.isEmpty {
             parts.append(asr)
         } else if !summary.listening {
-            parts.append("ASR 加载中")
+            parts.append(String(localized: "ASR 加载中"))
         }
         if let tr = summary.translation, !tr.isEmpty {
             parts.append(tr)
         }
         if let h = summary.hermes {
-            parts.append("Hermes \(h)")
+            parts.append(String(localized: "Hermes \(h)"))  // "Hermes ✓" / "Hermes ✗"
         }
         return parts
     }
@@ -117,7 +119,7 @@ struct StartupBanner: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("关闭")
+        .help(String(localized: "关闭"))
         .opacity(0.4)  // 默认半透明;hover 由 SwiftUI 在 plain style 下自然提升
         .onHover { hovering in
             // plain button 没有内置 hover 高亮,手动用 opacity 模拟。

@@ -17,6 +17,19 @@ struct SettingsView: View {
         case hermes = "Hermes"
         var id: String { rawValue }
 
+        /// Sidebar 显示标题 — LocalizedStringKey 自动跟随系统 locale:
+        /// en 时查 en.lproj/Localizable.strings,zh 时 fallback 到代码字面量。
+        /// rawValue 仍是 Pane 的稳定 id(NavigationLink value / @State selection 都靠它),
+        /// 不要改。
+        var localizedTitle: LocalizedStringKey {
+            switch self {
+            case .appearance: return "Appearance"
+            case .server:     return "Translation Model"
+            case .model:      return "Speech Recognition Model"
+            case .hermes:     return "Hermes"
+            }
+        }
+
         var icon: String {
             switch self {
             case .appearance: return "paintbrush"
@@ -35,7 +48,7 @@ struct SettingsView: View {
                 Section {
                     ForEach(Pane.allCases) { pane in
                         NavigationLink(value: pane) {
-                            Label(pane.rawValue, systemImage: pane.icon)
+                            Label(pane.localizedTitle, systemImage: pane.icon)
                         }
                     }
                 }

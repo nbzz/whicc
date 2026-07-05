@@ -15,7 +15,9 @@ struct LanguageMenuButton: View {
                 .frame(width: 18, height: 18)
         }
         .buttonStyle(.plain)
-        .help("目标翻译语言：\(LANG_SHORT_LABELS[langConfig.targetLang] ?? langConfig.targetLang)")
+        // 拆成本地化前缀 + verbatim 语言代码,前缀查表。
+        // .help() 接受 Text,用 Text + Text 拼接。
+        .help(Text("目标翻译语言：") + Text(LANG_SHORT_LABELS[langConfig.targetLang] ?? langConfig.targetLang))
         .hudControl()
     }
 

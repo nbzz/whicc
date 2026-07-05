@@ -50,7 +50,8 @@ struct GlossaryPane: View {
             title: "词库",
             trailing: {
                 HStack(spacing: 10) {
-                    Text("\(state.entries.count) 条")
+                    // 拆成 "数字 + 条" 两段 Text 拼接,让 "条" 后缀走本地化表。
+                    (Text("\(state.entries.count)") + Text(" 条"))
                         .font(.caption).foregroundColor(.secondary)
                     if !state.entries.isEmpty {
                         Button(role: .destructive) {
@@ -65,7 +66,9 @@ struct GlossaryPane: View {
                             Button("取消", role: .cancel) {}
                             Button("清空", role: .destructive) { state.clearGlossary() }
                         } message: {
-                            Text("删除全部 \(state.entries.count) 条术语")
+                            // "删除全部 X 条术语" 拆成 "删除全部 " + 数字 + " 条术语",
+                            // 让数字前后两段本地化片段都走 .strings 表 (key 是 "删除全部 " / " 条术语")。
+                            (Text("删除全部 ") + Text("\(state.entries.count)") + Text(" 条术语"))
                         }
                     }
                     Toggle(isOn: Binding(
@@ -75,7 +78,7 @@ struct GlossaryPane: View {
                         EmptyView()
                     }
                     .toggleStyle(.switch)
-                    .help(state.isPaused ? "自学习已暂停" : "自学习 (Hermes Agent) 运行中")
+                    .help(state.isPaused ? LocalizedStringKey("自学习已暂停") : LocalizedStringKey("自学习 (Hermes Agent) 运行中"))
                 }
             }
         )
@@ -104,7 +107,11 @@ struct GlossaryPane: View {
         // List as a card
         SettingsCard(padding: 0) {
             if filteredEntries.isEmpty {
-                Text(state.entries.isEmpty ? "词库为空，点右下角添加术语。" : "没有匹配的术语")
+                // 用显式 LocalizedStringKey,避免 ternary 推断成 String verbatim
+                let key: LocalizedStringKey = state.entries.isEmpty
+                    ? "词库为空，点右下角添加术语。"
+                    : "没有匹配的术语"
+                Text(key)
                     .font(.callout).foregroundColor(.secondary)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 20)

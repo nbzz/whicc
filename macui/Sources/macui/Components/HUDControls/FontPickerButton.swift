@@ -25,7 +25,8 @@ struct FontPickerButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("字体：\(state.fontChoice.displayName)（点击切换）")
+        // 拆成"字体："前缀(本地化) + displayName verbatim + "（点击切换）"后缀(本地化)
+        .help(Text("字体：") + Text(state.fontChoice.displayName) + Text("（点击切换）"))
         .hudControl()
     }
 }

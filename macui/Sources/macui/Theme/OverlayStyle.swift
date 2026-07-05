@@ -17,7 +17,9 @@ enum OverlayStyle: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
-    var label: String {
+    /// 显示在 swatch tooltip 上的颜色名。`LocalizedStringKey` 让 .help() 走本地化表。
+    /// 之前 String verbatim — en locale 下也显示"白/蓝/紫..."。
+    var label: LocalizedStringKey {
         switch self {
         case .white:     return "白"
         case .blue:      return "蓝"

@@ -34,7 +34,16 @@ struct ModelPane: View {
                 trailing: {
                     let asrCount = modelState.models.filter { $0.kind == .asr }.count
                     HStack(spacing: 8) {
-                        Text("\(asrCount) 个语音识别 ASR 模型，共 \(Self.formatBytes(totalSize))，卸载后自动释放磁盘空间")
+                        // 拆成 4 段 Text 拼接:
+                        //   数字 (verbatim String) + 后缀 (LocalizedStringKey) + 字节 (verbatim) + 后缀 (LocalizedStringKey)
+                        // 不能合成单个 interpolated string,Localizable.strings 是静态 key 表,
+                        // 插值过的整句不会命中任何条目。
+                        // Text + Text 拼接保留每段的本地化属性 (String init 走 verbatim,
+                        // LocalizedStringKey init 走 .strings 表)。
+                        (Text("\(asrCount)")
+                         + Text(" 个语音识别 ASR 模型，共 ")
+                         + Text(Self.formatBytes(totalSize))
+                         + Text("，卸载后自动释放磁盘空间"))
                             .font(.caption).foregroundColor(.secondary)
                         // 手动刷新按钮挪到这里：跟模型数量统计同框,
                         // 用户看 N 个模型时一眼能找到「刷新」入口。
@@ -248,8 +257,9 @@ struct ModelPane: View {
     /// 没有，下拉里加这种状态会让其他开发者误以为模型随代码打包。
     /// Python 端启动时自己判断本地有没有、必要时从 HuggingFace 下载。
     @ViewBuilder
+    /// `title` 走 LocalizedStringKey,中文字面量即自动本地化。
     private func slotPicker(
-        title: String,
+        title: LocalizedStringKey,
         recommendedID: String,
         isRecommendedReady: Bool,
         currentValue: Binding<String>,
@@ -298,8 +308,14 @@ struct ModelPane: View {
                     }
                 )
             ) {
-                Text(Self.optionLabel(for: recommendedID, isRecommended: true))
-                    .tag(recommendedID)
+                // 推荐项:model id (verbatim) + 本地化后缀 "(recommended)"。
+                // 不能用 Text("\(displayName) (recommended)") 拼字符串,因为 LocalizedStringKey
+                // 路径下整句去查表,查不到就 fallback 到字面量。改用 HStack 拼两个独立 Text。
+                HStack(spacing: 4) {
+                    Text(Self.optionDisplayName(for: recommendedID))
+                    Text("（推荐）")
+                }
+                .tag(recommendedID)
                 Text("其他…").tag(Self.otherOptionTag)
             }
             .labelsHidden()
@@ -343,17 +359,11 @@ struct ModelPane: View {
     /// Picker 用「其他」选项的 tag（必须是稳定字符串）
     private static let otherOptionTag = "__other__"
 
-    /// Picker 标签：如 "Qwen3-ASR-0.6B-4bit （推荐）"
-    /// 不显示"已下载/未下载"——模型文件存在用户本地，仓库里没有，
-    /// 显示这个会让其他开发者误以为模型随代码打包。
-    /// Python 端启动时会自己判断本地有没有、必要时自动从 HuggingFace 下载。
-    private static func optionLabel(
-        for modelID: String,
-        isRecommended: Bool
-    ) -> String {
-        let displayName = modelID.split(separator: "/").last.map(String.init) ?? modelID
-        let prefix = isRecommended ? "（推荐）" : ""
-        return "\(displayName) \(prefix)".trimmingCharacters(in: .whitespaces)
+    /// Picker 标签:只返回 displayName(model id 最后一段)。"（推荐）"后缀
+    /// 改成由调用方拼接 LocalizedStringKey,这样 Picker 内的 Text(displayName)
+    /// 走 verbatim (model id 不参与本地化),而 "（推荐）" 后缀走本地化表。
+    private static func optionDisplayName(for modelID: String) -> String {
+        modelID.split(separator: "/").last.map(String.init) ?? modelID
     }
 
     private var totalSize: Int64 {

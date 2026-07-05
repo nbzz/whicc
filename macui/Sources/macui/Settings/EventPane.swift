@@ -105,7 +105,8 @@ struct EventPane: View {
                 }
                 .buttonStyle(.bordered)
             }
-            Text("置信度 \(Int(eventAgent.confidence * 100))%")
+            // 拆成 "置信度 " + 数字 + "%",让本地化片段走表。数字为 Int 百分比。
+            (Text("置信度 ") + Text("\(Int(eventAgent.confidence * 100))") + Text("%"))
                 .font(.caption).foregroundColor(.secondary)
         }
     }

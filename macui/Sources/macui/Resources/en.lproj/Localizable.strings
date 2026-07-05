@@ -1,0 +1,271 @@
+/* en.lproj/Localizable.strings — Settings window localization (Phase 1: add English)
+ *
+ * Convention: keys are the EXISTING Chinese literals from source code, so
+ * SwiftUI's `Text("外观")` automatically resolves to the English translation
+ * under en locale without touching call sites. Missing key → fallback to
+ * the literal (which IS the Chinese) → zero regression on zh locale.
+ *
+ * The 5 Pane enum titles use English literal keys (e.g. "Appearance")
+ * because we changed `pane.localizedTitle` to return English directly;
+ * zh locale will still display the English literal — acceptable for now
+ * since zh users see Chinese in Pane *content* (subtitles/cards). Future
+ * phase can extend by adding a `localizedTitleZh` mapping.
+ *
+ * Window title + menu items use snake_case keys (via NSLocalizedString).
+ */
+
+/* ===== SettingsView.swift — sidebar pane titles (English literals as keys) ===== */
+"Appearance" = "Appearance";
+"Speech Recognition Model" = "Speech Recognition Model";
+"Translation Model" = "Translation Model";
+"Hermes" = "Hermes";
+"折叠侧边栏（⌃⌘S）" = "Collapse sidebar (⌃⌘S)";
+
+/* main.swift — window title + NSMenu items */
+"settings_window_title" = "Settings";
+"menu_preferences"     = "Preferences…";
+"menu_quit"            = "Quit whicc";
+"menu_file"            = "File";
+"menu_close"           = "Close";
+"menu_edit"            = "Edit";
+"menu_edit_cut"        = "Cut";
+"menu_edit_copy"       = "Copy";
+"menu_edit_paste"      = "Paste";
+"menu_edit_select_all" = "Select All";
+
+/* ===== AppearancePane.swift ===== */
+/* Top header card */
+"默认主题设置" = "Default theme settings";
+"这里改的是默认值 —— 重启 app 后仍然保留。" = "These are defaults — they persist across app restarts.";
+
+/* Font card */
+"字体" = "Font";
+"恢复默认字体（默认）" = "Reset to default font";
+"上一字体" = "Previous font";
+"下一字体" = "Next font";
+"我的收藏" = "My Favorites";
+"推荐字体" = "Recommended";
+"系统字体" = "System Fonts";
+"默认收藏" = "Default favorite";
+"加入收藏（HUD 循环）" = "Add to favorites (HUD cycle)";
+
+/* Font size card */
+"字号" = "Font size";
+"恢复默认字号（译文 32pt / 源文 18pt）" = "Reset (translation 32pt / source 18pt)";
+"译文" = "Translation";
+"源文" = "Source";
+
+/* Color card */
+"颜色" = "Color";
+"恢复默认颜色（白色）" = "Reset to default (white)";
+"自定色：" = "Custom color:";
+"自定义颜色（系统色环）" = "Custom color (system color wheel)";
+
+/* Color swatch tooltips (10 single-char names from OverlayStyle.label) */
+"白" = "White";
+"蓝" = "Blue";
+"紫" = "Purple";
+"粉" = "Pink";
+"红" = "Red";
+"橙" = "Orange";
+"黄" = "Yellow";
+"绿" = "Green";
+"灰" = "Gray";
+"自定" = "Custom";
+
+/* Shadow card */
+"描边与阴影" = "Outline & Shadow";
+"恢复默认阴影（强 0.70/16pt + 软 0.40/4pt）" = "Reset (strong 0.70/16pt + soft 0.40/4pt)";
+"主描边透明度半径" = "Strong stroke opacity";
+"主描边透明度（大模糊半径，保证低对比度背景可读）" = "Strong stroke opacity (large blur; keeps subtitles readable on low-contrast backgrounds)";
+"主描边模糊半径" = "Strong stroke blur radius";
+"弱描边透明度半径" = "Soft stroke opacity";
+"次描边透明度（小模糊半径，增强边缘锐度）" = "Soft stroke opacity (small blur; sharpens edges)";
+"弱描边模糊半径" = "Soft stroke blur radius";
+
+/* Opacity card */
+"窗体透明度" = "Window opacity";
+"恢复默认透明度（85%）" = "Reset to default (85%)";
+
+/* ===== ServerPane.swift ===== */
+"服务配置" = "Service configuration";
+"本地算力" = "Local compute";
+"外置算力优先" = "External priority";
+"「外置算力优先」: 远端不可达时自动回退到下方配置的「本机翻译回退地址」,无需手动干预" = "\"External priority\": when remote is unreachable, fall back to the \"Local fallback\" address below — no manual intervention needed.";
+
+"翻译节点" = "Translation node";
+"如 127.0.0.1:1234" = "e.g. 127.0.0.1:1234";
+"如 192.168.1.5:1234" = "e.g. 192.168.1.5:1234";
+"检测翻译回退节点" = "Test fallback node";
+"检测翻译节点" = "Test main node";
+"本机翻译服务地址，如Lm studio:http://127.0.0.1:1234" = "Local translation service address (e.g. LM Studio: http://127.0.0.1:1234)";
+"本机模型名称" = "Local model name";
+"外置算力翻译模型服务地址" = "External translation service address";
+"模型名称" = "Model name";
+"配置成功后，外置算力不可用时自动使用本地算力" = "After configuration, local fallback kicks in automatically when external fails";
+"保存并重启翻译服务" = "Save and restart translation service";
+"重启中…" = "Restarting…";
+"重启失败: " = "Restart failed: ";
+"已重启" = "Restarted";
+"启动失败,看 /tmp/translate-stream.log" = "Startup failed; see /tmp/translate-stream.log";
+
+/* Translation status row */
+"当前生效：本地算力" = "Active: Local compute";
+"（翻译未启用，不走远端节点）" = "(translation disabled; remote not in use)";
+"当前生效：外置算力" = "Active: External compute";
+"· 回退未触发" = "· Fallback not engaged";
+"当前生效：本机回退 " = "Active: Local fallback ";
+"（外置算力不可达，已自动切换为本机地址）" = "(external unreachable; auto-switched to local address)";
+"翻译服务全部不可用" = "Translation service unavailable";
+"翻译回退不可用" = "Local fallback unavailable";
+"正在探测连通性..." = "Probing connectivity…";
+
+/* Translation model dropdown */
+"请先填写翻译服务地址" = "Fill in the translation service address first";
+"拉取失败 — 重试" = "Fetch failed — retry";
+"正在获取模型…" = "Fetching models…";
+"正在获取模型列表…" = "Fetching model list…";
+"未找到模型 — 重试" = "No models found — retry";
+"刷新列表" = "Refresh list";
+"选择模型" = "Select model";
+
+/* Model dropdown help (note: full sentence, exact match required) */
+"请先在上方填写翻译服务地址,失焦后会自动拉取该节点的模型列表" = "Fill in the translation service address above first; the model list will be fetched automatically once focus leaves the field";
+"改完翻译服务地址后,失焦会自动拉取该节点的模型列表" = "After editing the translation service address, the model list for this node is fetched automatically on focus loss";
+"该节点未通过 /v1/models 返回任何模型" = "This node did not return any models via /v1/models";
+"已从外接翻译服务加载 " = "Loaded ";
+" 个模型,点击切换" = " models from external service; click to switch";
+
+/* Language section (in ServerPane) */
+"语言" = "Language";
+"恢复默认(源/目标都是自动检测)" = "Reset (both source and target on auto)";
+"源语言" = "Source language";
+"目标语言" = "Target language";
+"原文语言(auto = ASR 自动检测;固定后跳过检测)" = "Source language (auto = ASR detects; fixed skips detection)";
+"译文语言(auto = 按源选对:中文→英文,其他→中文)" = "Target language (auto = pick opposite of source: Chinese→English, other→Chinese)";
+"自动检测" = "Auto-detect";
+"切换后需重启后端(whicc.py / translate_stream)生效。" = "Restart the backends (whicc.py / translate_stream) for changes to take effect.";
+
+/* ===== HermesPane.swift ===== */
+"Hermes地址" = "Hermes address";
+"如 192.168.1.5" = "e.g. 192.168.1.5";
+"检测 Hermes" = "Test Hermes";
+
+/* ===== ModelPane.swift ===== */
+"本地模型管理" = "Local model management";
+"重扫模型目录" = "Rescan model folder";
+"推荐搭配：识别中文用 Qwen3-ASR,英文用 Nemotron 效果比较好" = "Recommended: Qwen3-ASR for Chinese, Nemotron for English";
+"存储位置" = "Storage location";
+"在 Finder 中显示" = "Show in Finder";
+"未找到本地模型" = "No local models found";
+"辅助模型" = "Auxiliary models";
+"对齐器等，不参与当前 ASR 槽位" = "Aligners etc.; not part of current ASR slot";
+"中文语音识别 ASR模型，次要模型，在识别为中文和方言时自动启用" = "Chinese speech recognition model — secondary; auto-engaged when source is Chinese or a dialect";
+"非中文语音识别 ASR模型，优先级最高，默认启用该模型" = "Non-Chinese speech recognition model — highest priority; default active model";
+"其他…" = "Other…";
+"mlx-community/" = "mlx-community/";
+"（未设置）" = "(not set)";
+"本地未下载" = "Not downloaded locally";
+"下载" = "Download";
+"切换后需重启app生效" = "Restart the app for changes to take effect";
+"（推荐）" = "(recommended)";
+"中文 ASR" = "Chinese ASR";
+"非中文 ASR" = "Non-Chinese ASR";
+"当前" = "Active";
+"取消下载" = "Cancel download";
+"准备中…" = "Preparing…";
+"下载失败" = "Download failed";
+"已取消" = "Cancelled";
+
+/* ModelPane header summary — split 4 段 Text 拼接的中间部分。
+ * 数字前后两段本地化片段独立查表,数字走 verbatim。
+ * 整句原文: "<N> 个语音识别 ASR 模型，共 <size>，卸载后自动释放磁盘空间"
+ * 英文:    "<N> ASR models, total <size>, uninstall to free disk space"
+ */
+" 个语音识别 ASR 模型，共 " = " ASR models, total ";
+"，卸载后自动释放磁盘空间" = ", uninstall to free disk space";
+
+/* ===== EventPane.swift ===== */
+"事件识别" = "Event recognition";
+"清除事件" = "Clear event";
+"用户提示" = "User prompt";
+"如：NBA季后赛、海贼王、WWDC…" = "e.g. NBA playoffs, One Piece, WWDC…";
+"获取当前事件" = "Fetch current event";
+"正在识别事件…" = "Detecting event…";
+"确认" = "Confirm";
+"不对" = "Reject";
+"置信度 " = "Confidence: ";
+"%" = "%";
+"临时术语已注入" = "Terms injected (one-time)";
+
+/* TODO(i18n): 置信度 uses Text("置信度 \(Int(value))%") — interpolation makes
+ * runtime key dynamic (e.g. "置信度 75%"), so %lld placeholder never matches.
+ * Defer to next phase: switch to String(format: NSLocalizedString(...), ...)
+ * with stringsdict plurals. */
+
+/* ===== GlossaryPane.swift ===== */
+"词库" = "Glossary";
+"清空词库" = "Clear glossary";
+"确认清空？" = "Confirm clear?";
+"取消" = "Cancel";
+"清空" = "Clear";
+"自学习已暂停" = "Self-learning paused";
+"自学习 (Hermes Agent) 运行中" = "Self-learning (Hermes Agent) running";
+"搜索术语…" = "Search terms…";
+"词库为空，点右下角添加术语。" = "Glossary is empty. Use the button below to add terms.";
+"没有匹配的术语" = "No matching terms";
+"添加术语" = "Add term";
+"编辑术语" = "Edit term";
+"中文" = "Chinese";
+"英文" = "English";
+"术语" = "term";
+"translation" = "translation";
+"保存" = "Save";
+
+/* GlossaryPane split-string parts (Text + Text 拼接):
+ *   <count> " 条" / <count> "删除全部 <count> 条术语"
+ * 整句原本是动态插值,拆成数字 verbatim + 前后两段本地化片段。
+ */
+" 条" = " entries";
+"删除全部 " = "Delete all ";
+" 条术语" = " terms";
+
+/* ===== HUD: Banner / StatusChips / Startup ===== */
+/* BannerText is consumed via localized DisplayText. */
+"译文在上" = "Translation on top";
+"原文在上" = "Source on top";
+
+/* AudioSource.displayName (HUD asrChip) */
+"系统" = "System";
+"麦克" = "Mic";
+
+/* StartupStage.displayText (banner 启动阶段) */
+"正在初始化 whicc…" = "Initializing whicc…";
+"正在启动后端…" = "Launching backends…";
+"正在扫描模型…" = "Scanning models…";
+"正在聆听" = "Listening";
+
+/* StartupBanner.headline (listening 收到后) */
+"准备就绪" = "Ready";
+
+/* StartupBanner.detailParts */
+"ASR 加载中" = "ASR loading…";
+"Hermes " = "Hermes ";
+
+/* OverlayState.mapStatusText (HUD 状态条) */
+"正在加载模型…" = "Loading model…";
+"模型就绪，等待音频…" = "Model ready, waiting for audio…";
+"正在聆听…" = "Listening…";
+"音频恢复中…" = "Recovering audio…";
+
+/* StartupBanner close button */
+"关闭" = "Close";
+
+/* ===== HUD: button .help() tooltips ===== */
+"复制全部字幕（译文 / 原文 / 全部）" = "Copy all subtitles (translation / source / all)";
+"缩小字幕" = "Decrease subtitle size";
+"放大字幕" = "Increase subtitle size";
+"目标翻译语言：" = "Target language: ";
+"字体：" = "Font: ";
+"（点击切换）" = " (click to switch)";
+"词库 / 场景 / 事件 / 配置" = "Glossary / scene / events / settings";
