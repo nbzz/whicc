@@ -86,12 +86,12 @@ struct ModelPane: View {
                 slotPicker(
                     title: "中文语音识别 ASR模型，次要模型，在识别为中文和方言时自动启用",
                     recommendedID: Self.recommendedChineseASR,
-                    isRecommendedDownloaded: modelState.models.contains { $0.id == Self.recommendedChineseASR },
+                    isRecommendedReady: isFullyDownloaded(Self.recommendedChineseASR),
                     currentValue: Binding(
                         get: { modelState.chineseASR },
                         set: { modelState.setChineseASR($0) }
                     ),
-                    isCurrentDownloaded: modelState.models.contains { $0.id == modelState.chineseASR },
+                    isCurrentReady: isFullyDownloaded(modelState.chineseASR),
                     onDownload: { downloadState.requestDownload(modelId: $0) }
                 )
             }
@@ -101,12 +101,12 @@ struct ModelPane: View {
                 slotPicker(
                     title: "非中文语音识别 ASR模型，优先级最高，默认启用该模型",
                     recommendedID: Self.recommendedNonChineseASR,
-                    isRecommendedDownloaded: modelState.models.contains { $0.id == Self.recommendedNonChineseASR },
+                    isRecommendedReady: isFullyDownloaded(Self.recommendedNonChineseASR),
                     currentValue: Binding(
                         get: { modelState.nonChineseASR },
                         set: { modelState.setNonChineseASR($0) }
                     ),
-                    isCurrentDownloaded: modelState.models.contains { $0.id == modelState.nonChineseASR },
+                    isCurrentReady: isFullyDownloaded(modelState.nonChineseASR),
                     onDownload: { downloadState.requestDownload(modelId: $0) }
                 )
             }
@@ -251,9 +251,9 @@ struct ModelPane: View {
     private func slotPicker(
         title: String,
         recommendedID: String,
-        isRecommendedDownloaded: Bool,
+        isRecommendedReady: Bool,
         currentValue: Binding<String>,
-        isCurrentDownloaded: Bool,
+        isCurrentReady: Bool,
         onDownload: @escaping (String) -> Void
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -265,7 +265,7 @@ struct ModelPane: View {
                 // 比如选了推荐 ID 但本地没下,或者手填了任意 HF ID,
                 // 槽位看起来「配置完成」但 ASR 启动时找不到模型。
                 // 校验通过 modelState.models.contains { $0.id == ... }。
-                if !currentValue.wrappedValue.isEmpty && isCurrentDownloaded {
+                if !currentValue.wrappedValue.isEmpty && isCurrentReady {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundColor(.green)
                         .font(.system(size: 11))
@@ -320,7 +320,7 @@ struct ModelPane: View {
             if currentValue.wrappedValue.isEmpty {
                 Text("（未设置）")
                     .font(.caption).foregroundColor(.secondary)
-            } else if currentValue.wrappedValue == recommendedID && !isRecommendedDownloaded {
+            } else if currentValue.wrappedValue == recommendedID && !isRecommendedReady {
                 HStack(spacing: 8) {
                     Image(systemName: "arrow.down.circle")
                         .foregroundColor(.orange)
@@ -468,6 +468,35 @@ struct ModelPane: View {
         case .cancelled: return .gray
         case .downloading: return .accentColor
         }
+    }
+
+    /// 判定一个 modelId 是否「完整可用的下载完成态」。
+    ///
+    /// 之前两版都有缺陷:
+    /// 1. 只看 `modelState.models.contains { $0.id == id }` ——
+    ///    `scanModels` 是 `contentsOfDirectory` 扫目录,只要目录存在就算。
+    ///    HuggingFace / mlx-audio 下载是先建目标目录再写文件,所以下载
+    ///    启动后很快 poller 就看到这个目录,绿勾提前出。
+    /// 2. 加上 `!downloadState.downloads[modelId].isActive` —— 覆盖
+    ///    了"下载中"场景,但**冷启动**后(进程刚启动 downloadState 为空)
+    ///    以及**下载失败 / 取消**残留半截目录的场景仍然误显绿勾。
+    ///
+    /// 现在依赖 `ModelInfo.isComplete`(由 scanModels 通过检查
+    /// `<model_dir>/{id_safe}.complete` 标记文件得出)。Python 端的
+    /// `model_downloader.py` 是在发 `completed` 事件**之后**立刻写
+    /// 这个标记,所以:
+    ///   - 下载中 → 标记不存在 → 绿勾 false
+    ///   - 下载完成 → 标记存在 → 绿勾 true(冷启动仍然准)
+    ///   - 下载失败 / 中断 → 标记不存在 → 绿勾 false(残留半截目录不再误显)
+    ///   - 历史上下载好但 .complete 丢失(手动删了等)→ 绿勾 false
+    ///     (保守策略,白嫖重下,而不是冒险启动失败)
+    ///
+    /// 唯一已知边缘:用户手动从 disk 删了 `.complete` 但保留了目录
+    /// (例如调试场景),绿勾会消失但 ASR 仍能跑——这是用户主动行为,
+    /// 跟"误显"性质不同,不算 bug。
+    private func isFullyDownloaded(_ modelId: String) -> Bool {
+        guard !modelId.isEmpty else { return false }
+        return modelState.models.first { $0.id == modelId }?.isComplete ?? false
     }
 
     // MARK: - Helpers

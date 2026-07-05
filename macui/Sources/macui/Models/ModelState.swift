@@ -43,6 +43,16 @@ final class ModelState: ObservableObject {
         let kind: Kind        // 区分 ASR 主模型 vs 辅助模型
         let sizeBytes: Int64
         let path: URL
+        /// 下载完整性来源:`true` 表示 Python 端已成功完成下载并写了
+        /// `<model_dir>/{id_safe}.complete` 标记文件;`false` 表示目录
+        /// 存在但没有完成标记(典型:下载中断后留下的半截目录)。
+        ///
+        /// 这个标记由 `model_downloader.py` 在发 `completed` 事件**之后**
+        /// 立刻写入,所以它比 downloadState 内部的 `.status == .completed`
+        /// 更权威——即使 macui 重启、Python download process 退出、
+        /// downloadState entries 被 cleanup,只要 `.complete` 文件还在,
+        /// 完整性判定就仍然准确。
+        let isComplete: Bool
 
         /// 模型类型。决定 UI 分组和"设为默认"按钮是否显示。
         ///
@@ -218,13 +228,21 @@ final class ModelState: ObservableObject {
             let displayName = id.split(separator: "/").last.map(String.init) ?? id
             let backend = ModelInfo.detectBackend(id)
             let kind = ModelInfo.detectKind(id)
+            // Python 端的 model_downloader.py:_model_local_path 把 "/" 换成
+            // "--" 作为子目录名,完成的标记文件放在目录同级,文件名是
+            // `<dirName>.complete`(见 model_downloader.py:286 / 379)。
+            // 标记文件不存在 = 这个目录要么下载中断要么刚开始下载,
+            // 完整性未知 → 留给上层不当作"绿勾"判定。
+            let completeMarker = url.appendingPathExtension("complete")
+            let isComplete = fm.fileExists(atPath: completeMarker.path)
             results.append(ModelInfo(
                 id: id,
                 displayName: displayName,
                 backend: backend,
                 kind: kind,
                 sizeBytes: size,
-                path: url
+                path: url,
+                isComplete: isComplete
             ))
         }
         // 默认按 size 降序（用户一般关心大模型）
