@@ -478,6 +478,12 @@ xcodebuild -project whicc.xcodeproj -scheme whicc -configuration Release \
 - **5+ 个语种**：考虑接入 [Weblate](https://weblate.org/)（开源）或 Crowdin（商业）—— 翻译者用网页 UI 翻译，自动合并 PR，支持 plural rules
 - **Phase 2**：`Localizable.stringsdict` 处理英文等复数语法 + Apple 推荐的 `Text("^[\(N) item](inflect: true)")` 形式，彻底消除 `Text + Text` deprecation warnings
 
+### 截图与录屏规范
+
+`docs/screenshots/` 放 README 顶部的视觉素材。具体规范、捕获方法、压缩命令见 [`docs/screenshots/README.md`](docs/screenshots/README.md)。
+
+> **新 UI 改动前**：先想想这个改动能不能截图 / 录屏出来让人一眼看懂。如果能，给它补一张图，比 1000 字描述有效。
+
 ---
 
 ## CI / GitHub Actions
