@@ -51,6 +51,48 @@ jobs:
           git describe --tags --always
           xcodebuild -version
 
+      # ---- Diagnostic snapshot (capture regardless of build outcome) ----
+      # Captures GitHub runner's environment so failure analysis
+      # doesn't depend on accessing CI logs (which require admin auth).
+      - name: Snapshot environment
+        if: always()
+        run: |
+          {
+            echo "=== uname ==="
+            uname -a
+            echo "=== xcode-select ==="
+            xcode-select -p
+            echo "=== xcodebuild -version (extended) ==="
+            xcodebuild -version
+            echo "=== sh ==="
+            ls -la /bin/sh
+            echo "=== which python3.13 ==="
+            which python3.13 || echo "(not found on PATH)"
+            echo "=== disk space ==="
+            df -h / /tmp
+            echo "=== memory ==="
+            vm_stat | head -5
+            echo "=== ulimit ==="
+            ulimit -a
+            echo "=== /tmp contents ==="
+            ls -la /tmp/ | head
+            echo "=== venv-standalone structure (post-symlink) ==="
+            ls -la venv-standalone/ 2>&1 | head -5
+            ls venv-standalone/bin/ 2>&1 | head -10
+            echo "=== xcodebuild.log size BEFORE build ==="
+            ls -la /tmp/xcodebuild.log 2>&1 || echo "(no log yet)"
+          } > /tmp/env_snapshot.txt 2>&1
+          head -50 /tmp/env_snapshot.txt
+
+      - name: Upload env snapshot on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: env-snapshot
+          path: /tmp/env_snapshot.txt
+          retention-days: 3
+          if-no-files-found: ignore
+
       # ---- Python deps (used by xcodegen preBuildScripts that embed backend) ----
       # Same setup as ci.yml — fresh VM each run, recreate venv-standalone.
       - name: Setup Python 3.13 venv
