@@ -1,7 +1,7 @@
 # whicc
 
-> **Your local translation safety net for foreign-language video.**
-> 给你看外语视频时心里踏实的一个翻译兜底。
+> **ASR model + translation model = real-time multilingual subtitle for any video.**
+> 语言识别模型 + 翻译模型 = 全球多语种实时翻译字幕
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Platform: macOS 26+](https://img.shields.io/badge/Platform-macOS%2026%2B-blue.svg)](https://developer.apple.com/macos/)
