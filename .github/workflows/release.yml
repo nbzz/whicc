@@ -71,14 +71,32 @@ jobs:
       # ---- Main build (Release) ----
       # This is the same command as DEVELOPMENT.md "快速打包". Build artifact
       # ends up at build/Build/Products/Release/whicc.app.
+      #
+      # Tee output to a log file so we can capture failure diagnostics
+      # in a workflow artifact (default xcodebuild output is buffered and
+      # hidden if the step exits non-zero). The last 200 lines of xcodebuild
+      # output are uploaded even on failure — without this, debug info
+      # for a failed release is lost (CI logs are admin-restricted).
       - name: Build whicc (Release)
         run: |
+          set -o pipefail
           xcodebuild \
             -project whicc.xcodeproj \
             -scheme whicc \
             -configuration Release \
             -derivedDataPath build \
-            clean build
+            clean build 2>&1 | tee /tmp/xcodebuild.log
+          echo "=== last 200 lines of xcodebuild output ==="
+          tail -200 /tmp/xcodebuild.log || true
+          echo "=== end ==="
+      - name: Upload xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: /tmp/xcodebuild.log
+          retention-days: 3
+          if-no-files-found: ignore
 
       # ---- Sanity check: app bundle exists ----
       - name: Verify .app bundle
