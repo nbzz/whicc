@@ -96,7 +96,11 @@ struct AppearancePane: View {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 60, alignment: .leading)
+                // 文字宽 ~180pt ≈ 详情区 1/3,7 字中文 label ("主描边
+                // 模糊半径") 不强制换行;留余给 i18n 长 label
+                // ("Strong stroke opacity" 21 字符)+ .fixedSize 兜底。
+                .frame(width: 180, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
                 .help(help)
             Slider(
                 value: Binding(
@@ -432,7 +436,10 @@ struct AppearancePane: View {
             Text(label)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 40, alignment: .leading)
+                // 180pt 跟阴影卡片对齐(原来 40 vs 100 vs 140 都
+                // 错开),虽然"译文"/"源文"只有 2 字,留同样宽度让
+                // 两段视觉一致。
+                .frame(width: 180, alignment: .leading)
             Slider(value: binding, in: range, step: step)
             Text("\(Int(binding.wrappedValue))pt")
                 .font(.system(size: 11, design: .monospaced))
