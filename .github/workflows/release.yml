@@ -45,6 +45,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ---- Install Xcode 26 (project uses macOS 26 SwiftUI APIs like
+      # GlassEffectContainer that don't exist in Xcode 16's macOS 15.5 SDK).
+      # macos-15 image ships with Xcode 16.4 by default; without this
+      # step, xcodebuild picks up Xcode 16 → compile errors. ----
+      - name: Setup Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.0"
+
+      - name: Select Xcode 26 as default
+        run: sudo xcode-select -s /Applications/Xcode_26.0.app
+
       - name: Show tag + Xcode version
         run: |
           echo "Building ${{ github.ref_name }}"
