@@ -58,9 +58,18 @@ jobs:
       # The Xcode preBuildScripts in project.yml runs `cp -R venv-standalone/`
       # to copy Python into the .app bundle. CI re-creates venv-standalone
       # from requirements.txt so we don't ship a 1.3GB binary in git.
+      #
+      # IMPORTANT: 必须用绝对路径调系统 Python.framework 的 python3.13。
+      # `python3.13 -m venv` 依赖 $PATH 解析,macos-15 runner 上一步
+      # `brew install xcodegen` 会把 /opt/homebrew/bin 推到 PATH 顶部,
+      # 结果 `python3.13` 解析到 homebrew python@3.13.14 → venv wrapper
+      # 硬编码 /opt/homebrew/Cellar/python@3.13/3.13.14/...Python。
+      # 装到用户机后,用户没装 homebrew 3.13.14 → dyld fail → ASR 失效。
+      # 用 framework 路径绑死 system Python (3.13.5),所有机器都装。
       - name: Setup Python 3.13 venv
         run: |
-          python3.13 -m venv /tmp/whicc-venv
+          SYSTEM_PYTHON="/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"
+          "$SYSTEM_PYTHON" -m venv /tmp/whicc-venv
           /tmp/whicc-venv/bin/pip install --upgrade pip wheel
           /tmp/whicc-venv/bin/pip install -r requirements.txt
 

@@ -112,9 +112,15 @@ jobs:
 
       # ---- Python deps (used by xcodegen preBuildScripts that embed backend) ----
       # Same setup as ci.yml — fresh VM each run, recreate venv-standalone.
+      #
+      # IMPORTANT: 必须用绝对路径调系统 Python.framework 的 python3.13,
+      # 否则 venv wrapper 会硬编码 homebrew python@3.13.14 路径,
+      # 用户机没装 homebrew 时 dyld fail → ASR 失效。详细原因见 ci.yml
+      # 注释。SOP.md §Troubleshooting 同步记录了这条踩坑。
       - name: Setup Python 3.13 venv
         run: |
-          python3.13 -m venv /tmp/whicc-venv
+          SYSTEM_PYTHON="/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"
+          "$SYSTEM_PYTHON" -m venv /tmp/whicc-venv
           /tmp/whicc-venv/bin/pip install --upgrade pip wheel
           /tmp/whicc-venv/bin/pip install -r requirements.txt
 

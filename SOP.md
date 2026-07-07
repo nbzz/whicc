@@ -302,6 +302,27 @@ open build/dist/whicc-0.1.1.dmg
 
 **修复**：从 `hdiutil create` 命令里去掉 `-format UDRW` flag——只创建从 -size 的卷默认就是 UDRW（Apple-recommended staging format）。
 
+### dmg 装到用户机 ASR 失效：`Library not loaded: /opt/homebrew/Cellar/python@3.13/...Python`
+
+**症状**：用户从 GitHub release 下载 `whicc-v0.1.X.dmg` 安装后,launcher log 报"ready"但 whicc.py 没起来。`pgrep -lf whicc.app` 只有主进程,没 whicc.py / translate_stream.py。`/tmp/whicc-out/logs/whicc.log` 是 0 字节。
+
+**根因 (v0.1.1 hotfix)**：CI runner 上 `brew install xcodegen` 之后,`which python3.13` 解析到 homebrew 装的 `/opt/homebrew/Cellar/python@3.13/3.13.14/bin/python3.13` (3.13.14) 而不是系统的 `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13` (3.13.5)。`python3.13 -m venv` 创建的 venv wrapper 把 homebrew framework 路径硬编码进 Mach-O dyld 引用 → 用户机没装 homebrew 3.13.14 → dyld fail → whicc.py 启动后立刻 crash。
+
+**本地复现**:
+```bash
+otool -L build/Build/Products/Release/whicc.app/Contents/Resources/venv/bin/python3
+# 期望: /Library/Frameworks/Python.framework/Versions/3.13/Python (system)
+# 失败: /opt/homebrew/Cellar/python@3.13/3.13.14/...Python (homebrew,不是 universal binary)
+```
+
+**修复 (v0.1.2)**：ci.yml + release.yml 都改成用绝对路径调 system Python:
+```bash
+SYSTEM_PYTHON="/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13"
+"$SYSTEM_PYTHON" -m venv /tmp/whicc-venv
+```
+
+**验证方法**：build 完后检查 `otool -L .../venv/bin/python3` 显示 system framework 路径,且 binary 是 universal (`Mach-O universal binary with 2 architectures`) 而不是 `Mach-O 64-bit executable arm64` 单架构 (单架构 = homebrew shim 的特征)。
+
 ### brew tap warnings（`aws/tap` not trusted）
 
 **原因**：macos-15 runner 上 `brew install` 被 Homebrew 限制。
