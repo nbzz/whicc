@@ -17,6 +17,7 @@
 - [CI / GitHub Actions](#ci--github-actions)
 - [发布 Release](#发布-release)
 - [打包成 macOS .app](#打包成-macos-app)
+- [发布 SOP（给 AI / 协作者）](SOP.md)
 
 ## 开发模式启动
 

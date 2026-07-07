@@ -188,6 +188,8 @@ Fill in a scene description in Settings (e.g. `AI interview` / `NBA Finals`) to 
 - [ ] **External agent glossary training** — improve the Hermes multi-language glossary
 - [ ] **More i18n** — PRs welcome. Currently only Chinese and English UI; other languages untranslated.
 
+> **Maintainers / AI agents**: For release process, see [SOP.md](SOP.md).
+
 ---
 
 ## ❓ FAQ
