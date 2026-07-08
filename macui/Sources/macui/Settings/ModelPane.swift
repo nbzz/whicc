@@ -321,11 +321,17 @@ struct ModelPane: View {
             .labelsHidden()
             .pickerStyle(.menu)
 
-            // 选"其他"时才显示手动输入框
+            // 选"其他"时才显示手动输入框。
+            // DebouncedModelField(定义在 ServerPane.swift):0.5s 停手才
+            // 提交 setter — 之前直接绑 currentValue,每个按键立即
+            // writeField 同步写盘 + reload,ModelState 3s 轮询回读还会
+            // 把正在输入的内容覆盖回磁盘旧值(打字被吃/光标乱跳)。
             if currentValue.wrappedValue != recommendedID {
-                TextField("mlx-community/", text: currentValue)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
+                DebouncedModelField(
+                    placeholder: "mlx-community/",
+                    current: currentValue.wrappedValue,
+                    onCommit: { currentValue.wrappedValue = $0 }
+                )
             }
 
             // 状态提示

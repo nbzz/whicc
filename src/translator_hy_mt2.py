@@ -608,7 +608,9 @@ class VLLMBackend:
     def __init__(self, base_url: str | list[str] = "",
                  model_id: str = "",
                  model_map: dict[str, str] | None = None,
-                 connect_timeout: float = 3.0):
+                 connect_timeout: float = 3.0,
+                 api_key_map: dict[str, str] | None = None,
+                 endpoint: str = "auto"):
         # 接受单 URL (str) 或多 URL (list) — 兼容旧 API
         urls = [base_url] if isinstance(base_url, str) else list(base_url)
         if not urls or not urls[0]:
@@ -617,6 +619,17 @@ class VLLMBackend:
                 "调用方应从 lang_config.json:translation_url / --vllm-url 显式传入"
             )
         self._connect_timeout = connect_timeout
+        # per-URL API key — 非空时所有请求(探活 + 生成)带
+        # `Authorization: Bearer` 头。key 跟 candidates 同格式化。
+        self._api_key_per_url: dict[str, str] = {
+            self._resolve_ipv4(k.rstrip("/")): v
+            for k, v in (api_key_map or {}).items() if v
+        }
+        # 请求端点: "chat"=/v1/chat/completions(默认路径),
+        # "responses"=/v1/responses(GPT 系列新端点,一些站点只提供它),
+        # "auto"=先走 chat,收到 404/405 自动切 responses(反之亦然)并锁定。
+        self.endpoint = endpoint if endpoint in ("auto", "chat", "responses") else "auto"
+        self._active_endpoint = "responses" if endpoint == "responses" else "chat"
         # 每个都解析成 IPv4 字面量(避免 v6 连接问题) + 去尾斜杠
         self._candidates = [self._resolve_ipv4(u.rstrip("/")) for u in urls]
         self.base_url = self._pick_healthy()  # 选中的那个
@@ -632,6 +645,106 @@ class VLLMBackend:
         }
         # 当前 base_url 实际用的 model_id (生成请求时用)
         self._active_model_id = self._model_per_url.get(self.base_url, model_id)
+
+    def _headers(self, sse: bool = False) -> dict:
+        """请求头 — 当前 base_url 配了 API key 就带 Bearer 鉴权。"""
+        h = {"Content-Type": "application/json"}
+        if sse:
+            h["Accept"] = "text/event-stream"
+        key = self._api_key_per_url.get(self.base_url, "")
+        if key:
+            h["Authorization"] = f"Bearer {key}"
+        return h
+
+    # ── 端点适配(chat/completions ↔ responses) ─────────────────────────
+
+    @staticmethod
+    def _messages_to_responses_input(messages: list[dict]):
+        """chat messages → Responses API 的 (instructions, input)。
+
+        system 消息拼进 instructions(Responses 的系统级指令字段);
+        只有单条 user 时 input 传纯字符串(最大兼容 — 本项目
+        build_messages 恰好只产单条 user),多条时传消息数组
+        (Responses 的 input 也接受 role/content 列表)。
+        """
+        instructions = "\n".join(
+            m.get("content", "") for m in messages if m.get("role") == "system"
+        ).strip() or None
+        rest = [m for m in messages if m.get("role") != "system"]
+        if len(rest) == 1 and rest[0].get("role") == "user":
+            inp = rest[0].get("content", "")
+        else:
+            inp = rest
+        return instructions, inp
+
+    def _build_request(self, messages: list[dict], temperature: float,
+                       top_p: float, top_k: int, repetition_penalty: float,
+                       max_new_tokens: int, stream: bool) -> tuple[str, dict]:
+        """按当前端点构造 (path, body)。"""
+        if self._active_endpoint == "responses":
+            instructions, inp = self._messages_to_responses_input(messages)
+            body: dict = {
+                "input": inp,
+                "temperature": temperature,
+                "top_p": top_p,
+                # Responses API 用 max_output_tokens(chat 的 max_tokens
+                # 会被 OpenAI 拒 400)。最低 16,翻译场景默认 80 不受影响。
+                "max_output_tokens": max(max_new_tokens, 16),
+            }
+            if instructions:
+                body["instructions"] = instructions
+            # top_k / repetition_penalty 不是 Responses API 标准参数,
+            # OpenAI 对未知参数返回 400 — 不发(vLLM 侧走 chat 端点,不受影响)。
+            path = "/v1/responses"
+        else:
+            body = {
+                "messages": messages,
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "repetition_penalty": repetition_penalty,
+                "max_tokens": max_new_tokens,
+            }
+            path = "/v1/chat/completions"
+        if stream:
+            body["stream"] = True
+        if self._active_model_id:
+            body["model"] = self._active_model_id
+        return path, body
+
+    def _flip_endpoint_if_auto(self, http_status: int) -> bool:
+        """auto 模式下收到 404/405(站点没实现当前端点)→ 切另一个端点。
+        显式配置 chat/responses 时不自动切(尊重用户选择)。"""
+        if self.endpoint != "auto" or http_status not in (404, 405):
+            return False
+        self._active_endpoint = (
+            "responses" if self._active_endpoint == "chat" else "chat"
+        )
+        print(f"[translator] 端点自适应: HTTP {http_status} → 切到 "
+              f"{self._active_endpoint} 端点", flush=True)
+        return True
+
+    @staticmethod
+    def _parse_responses_output(result: dict) -> str:
+        """解析 /v1/responses 非流式响应的输出文本。
+
+        标准结构: output[] → type=="message" 的 item → content[] →
+        type=="output_text" 的 text。部分兼容实现直接给顶层
+        output_text 字符串,作为 fallback。
+        """
+        parts: list[str] = []
+        for item in result.get("output", []):
+            if item.get("type") == "message":
+                for part in item.get("content", []):
+                    if part.get("type") == "output_text":
+                        parts.append(part.get("text", ""))
+        if parts:
+            return "".join(parts)
+        ot = result.get("output_text")
+        if isinstance(ot, str) and ot:
+            return ot
+        raise RuntimeError(
+            f"Responses API 响应缺少 output_text (keys={list(result.keys())})")
 
     def _pick_healthy(self) -> str:
         """按顺序探活,首个健康 URL 胜出。全失败 raise 包含每个 URL 的具体错误。"""
@@ -664,28 +777,46 @@ class VLLMBackend:
             return url  # 解析失败则用原始 URL
 
     def _check_health(self, base_url: str, timeout: float = 3.0):
-        """探测单个 URL 的健康状态。失败抛异常。
+        """探测单个 URL 的健康状态。真正连不上/鉴权错才抛异常。
 
-        用 GET /v1/models 探活,而不是 /health — 原因:
-        - /health 只测 server alive,不测模型已加载
-        - vLLM 刚启动还没加载完模型时 /health 也返回 200,
-          但 /v1/chat/completions 会立即 503/timeout
-        - /v1/models 返回的 data 列表非空 = 模型真的可用
-          (LM Studio / vLLM / Ollama 都返回 OpenAI 兼容格式)
+        用 GET /v1/models 探活(带 API key),分级判定:
+        - 200 + data 非空 → 健康(模型已加载)
+        - 200 + data 空   → 可达但警告(部分网关列表为空、推理正常)
+        - 404 / 405       → **可达** — 站点不实现 /v1/models(如只提供
+          /v1/responses 的 GPT 系列网关)。之前这里直接判死,把这类
+          站点全堵在门外;模型名/端点交由用户配置 + auto 自适应。
+        - 401 / 403       → 鉴权失败,明确报错提示填 API key
+        - 连接错误/超时   → 不可达
         """
         import urllib.request
+        import urllib.error
+        headers = {}
+        key = self._api_key_per_url.get(base_url, "")
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         try:
-            req = urllib.request.Request(f"{base_url}/v1/models", method="GET")
+            req = urllib.request.Request(f"{base_url}/v1/models",
+                                         headers=headers, method="GET")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"HTTP {resp.status}")
-                # 解析响应,要求 data 列表非空
                 body = json.loads(resp.read())
                 data = body.get("data", [])
-                if not data:
-                    raise RuntimeError("/v1/models 返回空列表(模型未加载)")
-                print(f"[translator] 翻译服务已连接 ({base_url}, {len(data)} 模型可用)。",
-                      flush=True)
+                if data:
+                    print(f"[translator] 翻译服务已连接 ({base_url}, "
+                          f"{len(data)} 模型可用)。", flush=True)
+                else:
+                    print(f"[translator] 已连接 ({base_url}),/v1/models 列表"
+                          f"为空 — 继续(模型名以用户配置为准)。", flush=True)
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 405):
+                print(f"[translator] 已连接 ({base_url}),该站点不提供 "
+                      f"/v1/models — 继续(请手动配置模型名;auto 端点会"
+                      f"自适应 /v1/responses)。", flush=True)
+                return
+            if e.code in (401, 403):
+                raise RuntimeError(
+                    f"鉴权失败 ({base_url}): HTTP {e.code} — "
+                    f"请在设置里填写正确的 API key") from e
+            raise RuntimeError(f"健康检查失败 ({base_url}): HTTP {e.code}") from e
         except Exception as e:
             raise RuntimeError(f"健康检查失败 ({base_url}): {e}") from e
 
@@ -694,46 +825,54 @@ class VLLMBackend:
                  repetition_penalty: float = 1.05,
                  max_new_tokens: int = 80) -> str:
         """非流式生成。失败时自动重选候选 URL (M2: 远端中途 OOM
-        重启时 session 不会翻车) — 重试一次仍失败再 raise。
+        重启时 session 不会翻车);auto 端点模式下 404/405 会先切
+        另一个端点重试(站点只实现 chat/responses 其一)。
         """
         import urllib.request
-        # 第一次试 self.base_url,失败时 _pick_healthy() 选下一个健康的
-        for attempt in range(2):
+        import urllib.error
+        # 3 次机会: 端点自适应一次 + URL 重选一次 + 最终尝试
+        for attempt in range(3):
             try:
                 # 未配置 model_id (空串) → 不在请求体里塞 model 字段,
                 # 让 vLLM 服务端选默认 (LM Studio/vLLM 都有"first loaded
                 # model"兜底)。硬塞 "" 会让 vLLM 返回 400 "model not found"。
-                body: dict = {
-                    "messages": messages,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                    "top_k": top_k,
-                    "repetition_penalty": repetition_penalty,
-                    "max_tokens": max_new_tokens,
-                }
-                if self._active_model_id:
-                    body["model"] = self._active_model_id
+                path, body = self._build_request(
+                    messages, temperature, top_p, top_k,
+                    repetition_penalty, max_new_tokens, stream=False)
                 payload = json.dumps(body).encode()
                 req = urllib.request.Request(
-                    f"{self.base_url}/v1/chat/completions",
+                    f"{self.base_url}{path}",
                     data=payload,
-                    headers={"Content-Type": "application/json"},
+                    headers=self._headers(),
                     method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=60) as resp:
                     result = json.loads(resp.read())
-                # 检查 vLLM 返回的 error 字段(OOM / prompt 过长)
-                if "error" in result:
-                    raise RuntimeError(f"vLLM 错误: {result['error']}")
+                # 检查服务端返回的 error 字段(OOM / prompt 过长)
+                if "error" in result and result["error"]:
+                    raise RuntimeError(f"翻译服务错误: {result['error']}")
+                if self._active_endpoint == "responses":
+                    return self._parse_responses_output(result).strip()
                 return result["choices"][0]["message"]["content"].strip()
+            except urllib.error.HTTPError as e:
+                if attempt < 2 and self._flip_endpoint_if_auto(e.code):
+                    continue  # 换端点立刻重试,不换 URL
+                if attempt == 2:
+                    raise
+                print(f"[translator] {self.base_url} 失败 (HTTP {e.code}),"
+                      f"重选候选...", flush=True)
+                self.base_url = self._pick_healthy()
+                self._active_model_id = self._model_per_url.get(
+                    self.base_url, self.model_id)
             except (urllib.error.URLError, RuntimeError, ConnectionError) as e:
-                if attempt == 1:
+                if attempt == 2:
                     raise
                 print(f"[translator] {self.base_url} 失败 ({e}),重选候选...",
                       flush=True)
                 self.base_url = self._pick_healthy()
                 self._active_model_id = self._model_per_url.get(
                     self.base_url, self.model_id)
+        raise RuntimeError("generate: 重试次数耗尽")  # 防御,正常不可达
 
     def generate_streaming(self, messages: list[dict],
                            on_token: Callable[[str, str], None],
@@ -750,31 +889,36 @@ class VLLMBackend:
         argument with `lambda piece, full: handler(full)`.
         """
         import urllib.request
-        # 同 _generate 的处理: model_id 空就跳过 model 字段
-        body: dict = {
-            "messages": messages,
-            "temperature": temperature,
-            "top_p": top_p,
-            "top_k": top_k,
-            "repetition_penalty": repetition_penalty,
-            "max_tokens": max_new_tokens,
-            "stream": True,
-        }
-        if self._active_model_id:
-            body["model"] = self._active_model_id
-        payload = json.dumps(body).encode()
-        req = urllib.request.Request(
-            f"{self.base_url}/v1/chat/completions",
-            data=payload,
-            headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-            method="POST",
-        )
+        import urllib.error
+        # auto 端点模式: 404/405 时切另一个端点重试一次
+        resp = None
+        for attempt in range(2):
+            path, body = self._build_request(
+                messages, temperature, top_p, top_k,
+                repetition_penalty, max_new_tokens, stream=True)
+            payload = json.dumps(body).encode()
+            req = urllib.request.Request(
+                f"{self.base_url}{path}",
+                data=payload,
+                headers=self._headers(sse=True),
+                method="POST",
+            )
+            try:
+                resp = urllib.request.urlopen(req, timeout=120)
+            except urllib.error.HTTPError as e:
+                if attempt == 0 and self._flip_endpoint_if_auto(e.code):
+                    continue
+                raise
+            break
+        if resp is None:
+            raise RuntimeError("generate_streaming: 无可用端点")  # 防御
         full = ""
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        is_responses = self._active_endpoint == "responses"
+        with resp:
             for raw_line in resp:
                 line = raw_line.decode("utf-8", errors="replace").strip()
                 if not line or not line.startswith("data: "):
-                    continue
+                    continue  # 跳过空行和 `event:` 行(Responses SSE 会发)
                 data = line[len("data: "):]
                 if data == "[DONE]":
                     break
@@ -784,8 +928,24 @@ class VLLMBackend:
                     # 返回 {"error": {...}} (没有 choices 字段)。原来代码
                     # 被 except KeyError 吞掉,变成"流继续,UI 收到空字符串"
                     # 然后被 _is_bad_output("") 当合法翻译返回。
-                    if "error" in chunk:
-                        raise RuntimeError(f"vLLM 错误: {chunk['error']}")
+                    if "error" in chunk and chunk["error"]:
+                        raise RuntimeError(f"翻译服务错误: {chunk['error']}")
+                    if is_responses:
+                        # Responses API 的 SSE 是带类型事件流:
+                        # response.output_text.delta 的 delta 字段是增量;
+                        # response.completed = 正常收尾;
+                        # response.error / error = 服务端异常。
+                        ctype = chunk.get("type", "")
+                        if ctype == "response.output_text.delta":
+                            piece = chunk.get("delta", "")
+                            if piece:
+                                full += piece
+                                on_token(piece, full)
+                        elif ctype == "response.completed":
+                            break
+                        elif ctype in ("response.error", "error", "response.failed"):
+                            raise RuntimeError(f"Responses API 错误: {chunk}")
+                        continue
                     delta = chunk["choices"][0].get("delta", {})
                     piece = delta.get("content", "")
                     if piece:
@@ -809,7 +969,9 @@ class HyMT2Translator:
                  top_p: float = 0.6,
                  top_k: int = 20,
                  repetition_penalty: float = 1.05,
-                 max_new_tokens: int = 80):
+                 max_new_tokens: int = 80,
+                 api_key_map: dict[str, str] | None = None,
+                 endpoint: str = "auto"):
         self.glossary_path = glossary_path
         self.glossary = _load_glossary(glossary_path)
         self.temperature = temperature
@@ -817,8 +979,12 @@ class HyMT2Translator:
         self.top_k = top_k
         self.repetition_penalty = repetition_penalty
         self.max_new_tokens = max_new_tokens
-        # vllm_url / model_id / model_map 全部透传给 VLLMBackend
-        self._backend = VLLMBackend(vllm_url, model_id=model_id, model_map=model_map)
+        # vllm_url / model_id / model_map / api_key_map / endpoint
+        # 全部透传给 VLLMBackend
+        self._backend = VLLMBackend(vllm_url, model_id=model_id,
+                                    model_map=model_map,
+                                    api_key_map=api_key_map,
+                                    endpoint=endpoint)
 
     def _generate(self, messages: list[dict]) -> tuple[str, float]:
         """底层推理，返回 (raw_output, elapsed_ms)。"""
@@ -954,14 +1120,20 @@ class HyMT2Translator:
         initial_bad = _is_bad_output(raw, target_lang)
         raw, elapsed_ms, retried = self._retry_if_bad(raw, source_text, hits, elapsed_ms, target_lang=target_lang)
         if retried:
-            on_token(postprocess_translation(raw.strip())[0])
+            # on_token 是 (piece, full) 双参回调 — 之前这里单参调用,
+            # 坏输出触发重试时直接 TypeError 崩掉翻译线程。
+            # 重试语义 = 整段替换,piece 和 full 都传重试后的全文。
+            _retry_text = postprocess_translation(raw.strip())[0]
+            on_token(_retry_text, _retry_text)
         result, post_meta = postprocess_translation(raw.strip())
         if effective_ctx and _looks_like_context_echo(result, _last_translation):
             messages_nc = build_messages(source_text, glossary_hits=hits, context=None, target_lang=target_lang)
             raw2, elapsed2 = self._generate_streaming(messages_nc, on_token)
             raw2, elapsed2, retried2 = self._retry_if_bad(raw2, source_text, hits, elapsed2, target_lang=target_lang)
             if retried2:
-                on_token(postprocess_translation(raw2.strip())[0])
+                # 同上:双参回调,单参调用是必崩 bug
+                _retry_text2 = postprocess_translation(raw2.strip())[0]
+                on_token(_retry_text2, _retry_text2)
             result, post_meta = postprocess_translation(raw2.strip())
             elapsed_ms += elapsed2
         _last_translation = result

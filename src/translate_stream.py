@@ -840,6 +840,28 @@ def main():
         # CLI fallback (外部脚本可能传) 用配置的 fb model — 也算"本机"
         model_map[cli_fb] = fb_model_id
 
+    # per-URL API key: 主/备节点各自的鉴权 key(macui 设置页配,可空)。
+    # 非空时该 URL 的所有请求(探活 + 翻译)带 Authorization: Bearer 头。
+    api_key_map: dict[str, str] = {}
+    main_api_key = (lang_cfg.get("translation_api_key") or "").strip()
+    fb_api_key = (lang_cfg.get("translation_fallback_api_key") or "").strip()
+    if vllm_url and main_api_key:
+        api_key_map[vllm_url] = main_api_key
+    if configured_fb and fb_api_key:
+        api_key_map[configured_fb] = fb_api_key
+    if cli_fb and cli_fb != configured_fb and fb_api_key:
+        api_key_map[cli_fb] = fb_api_key
+    if api_key_map:
+        print(f"[translate] 已配置 API key ({len(api_key_map)} 个节点)", flush=True)
+
+    # 请求端点: auto(默认,404 自适应) / chat(/v1/chat/completions) /
+    # responses(/v1/responses — GPT 系列流式端点,一些站点只提供它)
+    endpoint = (lang_cfg.get("translation_endpoint") or "auto").strip().lower()
+    if endpoint not in ("auto", "chat", "responses"):
+        print(f"[translate] 未知 translation_endpoint '{endpoint}',回退 auto", flush=True)
+        endpoint = "auto"
+    print(f"[translate] 翻译请求端点: {endpoint}", flush=True)
+
     # __init__ 内部就做健康探活,失败抛异常 — 建一次直接用,失败就退出
     # (比让进程空转报错更友好;早期版本先建一个丢弃的实例探活,再建正式的,
     # 启动时白跑两次 GET /v1/models,已合并)。
@@ -854,6 +876,8 @@ def main():
             top_k=args.top_k,
             repetition_penalty=args.repetition_penalty,
             max_new_tokens=args.max_new_tokens,
+            api_key_map=api_key_map,
+            endpoint=endpoint,
         )
         print(f"[translate] 已连接翻译服务,候选: {candidates}", flush=True)
     except Exception as e:

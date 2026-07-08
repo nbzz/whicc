@@ -69,6 +69,26 @@ struct ServerPane: View {
                 Text("翻译节点")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
+                // 请求端点选择:auto = 先走 chat/completions,收到 404/405
+                // 自动切 /v1/responses(GPT 系列流式端点)并锁定 — 覆盖
+                // "站点只实现其中一个端点"的情况。显式选择时不自动切。
+                HStack(spacing: 12) {
+                    Text("请求端点")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 60, alignment: .leading)
+                        .help("站点只提供 /v1/responses(GPT 系列)时选 Responses;不确定就留自动")
+                    Picker("", selection: Binding(
+                        get: { langConfig.translationEndpoint },
+                        set: { langConfig.setTranslationEndpoint($0) }
+                    )) {
+                        Text("自动检测").tag("auto")
+                        Text("Chat Completions（/v1/chat/completions）").tag("chat")
+                        Text("Responses（/v1/responses）").tag("responses")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
                 // 本机翻译回退地址放在最前面 — 大多数用户场景下
                 // 本机 LM Studio 才是实际承担翻译的角色(永远不会挂
                 // 的兜底),应该最先看到。远端是"高级用户"的扩展。
@@ -85,6 +105,33 @@ struct ServerPane: View {
                     help: "检测翻译回退节点",
                     debounce: true,
                     label: "本机翻译服务地址，如Lm studio:http://127.0.0.1:1234",
+                    // 之前漏了 onCommit → 用户填完本机地址后
+                    // fetchRemoteModelsFallback 永远不会自动触发,模型
+                    // 下拉框停在假 loading,"本机模型名"没法选。
+                    onCommit: {
+                        langConfig.detectTranslationFallback()
+                        langConfig.fetchRemoteModelsFallback()
+                    }
+                )
+                // 本机节点 API key(可选)。多数本机 LM Studio 裸跑不需要;
+                // 反代/网关后面的服务需要。非空时探活+翻译请求都带
+                // Authorization: Bearer 头。
+                hostRow(
+                    placeholder: "API key（可选，留空不鉴权）",
+                    icon: "key",
+                    text: Binding(
+                        get: { langConfig.translationFallbackApiKey },
+                        set: { langConfig.setTranslationFallbackApiKey($0) }
+                    ),
+                    reachable: nil,
+                    refresh: { langConfig.detectTranslationFallback() },
+                    help: "本机节点鉴权 key,改完自动重新探测",
+                    debounce: true,
+                    label: "本机 API key（可选）",
+                    onCommit: {
+                        langConfig.detectTranslationFallback()
+                        langConfig.fetchRemoteModelsFallback()
+                    }
                 )
                 // 本机回退模型名称：fallback URL 上跑的模型。
                 // 远端可部署更强模型(如 qwen2.5-32b),本机通常只跑得起
@@ -100,7 +147,7 @@ struct ServerPane: View {
                     models: langConfig.remoteModelsFallback,
                     onFetch: { langConfig.fetchRemoteModelsFallback() },
                     onPick: { langConfig.setTranslationFallbackModel($0) },
-                    label: "本机模型名称",
+                    label: "本机模型名称（可手动输入）",
                     urlIsEmpty: langConfig.translationFallbackUrl.isEmpty
                 )
                 hostRow(
@@ -115,7 +162,28 @@ struct ServerPane: View {
                     help: "检测翻译节点",
                     debounce: true,
                     label: "外置算力翻译模型服务地址",
-                    onCommit: { langConfig.fetchRemoteModels() }
+                    onCommit: {
+                        langConfig.detectTranslation()
+                        langConfig.fetchRemoteModels()
+                    }
+                )
+                // 外置节点 API key(可选)— vLLM --api-key / 云端网关场景。
+                hostRow(
+                    placeholder: "API key（可选，留空不鉴权）",
+                    icon: "key",
+                    text: Binding(
+                        get: { langConfig.translationApiKey },
+                        set: { langConfig.setTranslationApiKey($0) }
+                    ),
+                    reachable: nil,
+                    refresh: { langConfig.detectTranslation() },
+                    help: "外置节点鉴权 key,改完自动重新探测",
+                    debounce: true,
+                    label: "外置 API key（可选）",
+                    onCommit: {
+                        langConfig.detectTranslation()
+                        langConfig.fetchRemoteModels()
+                    }
                 )
                 // 远端模型名称：发到 vLLM / LM Studio 的 /v1/chat/completions
                 // 请求体的 "model" 字段。留空 = 让 Python 端用 --model-id
@@ -129,7 +197,7 @@ struct ServerPane: View {
                     models: langConfig.remoteModels,
                     onFetch: { langConfig.fetchRemoteModels() },
                     onPick: { langConfig.setTranslationModel($0) },
-                    label: "模型名称",
+                    label: "模型名称（可手动输入）",
                     urlIsEmpty: langConfig.translationUrl.isEmpty
                 )
                 // fallback 链状态可视化：让用户一眼看到翻译服务当前实际
@@ -660,11 +728,12 @@ private struct DebouncedHostRow: View {
             }
         }
         .onChange(of: modelText) { _, newModelText in
-            // 文件监视器触发 reload 时，modelText 会变。如果草稿跟之前
-            // 的 model 一致（说明这次 reload 来自我们自己），跳过；否则
-            // 用新 model 值覆盖草稿（用户在编辑中不要被打断，所以只在
-            // 草稿未修改时同步——简化处理：如果不同就同步）。
-            if newModelText != draft {
+            // 外部变更(Python 端写 lang_config → 文件监视器 reload)同步
+            // 进草稿。**编辑中(pendingCommit 非 nil)绝不覆盖** — 之前
+            // "不同就同步"会让自己的保存回流把正在输入的草稿回滚成磁盘
+            // 旧值,吃字 + 光标乱跳,地址根本打不完整。自回流现在还被
+            // LangConfig.lastWrittenData 指纹挡了一层,这里是二道防线。
+            if pendingCommit == nil && newModelText != draft {
                 draft = newModelText
             }
         }
@@ -686,6 +755,9 @@ private struct DebouncedHostRow: View {
             try? await Task.sleep(for: Self.debounceDuration)
             if Task.isCancelled { return }
             modelSetter.wrappedValue = value
+            // commit 完成,清掉标记 — onChange(modelText) 的"编辑中不覆盖"
+            // 守卫依赖它判断当前是否有未落盘的草稿。
+            pendingCommit = nil
             // 写回 setter 后(用户停手,新值已落 lang_config.json),
             // 触发 onCommit — 例:fetchRemoteModels() 拉新 URL 的模型列表。
             onCommit?()
@@ -693,56 +765,109 @@ private struct DebouncedHostRow: View {
     }
 }
 
-// MARK: - Translation model dropdown (取代文本框 + 右边小菜单)
+// MARK: - Translation model row (可输入文本框 + 列表下拉按钮)
 //
-// 占满一行的下拉框 — 用户改完 URL 失焦后,自动 fetch 下来的模型列表
-// 作为选项。点击展开 + 选中,跟 macOS 系统 Picker 视觉一致。
-//
-// 状态映射:
-//   - fetched == nil           → 占位 "选择模型" (拉取中)
-//   - fetched == false         → 占位 "拉取失败 — 点击重试" (点触发 fetch)
-//   - fetched == true + 空     → 占位 "未找到模型" (但仍 trigger fetch 重试)
-//   - fetched == true + 当前选中 → 显示当前模型名 + chevron
-//   - fetched == true + 没选    → 占位 "选择模型"
-//
-// 设计取舍:跟 hostRow 一样要有 label (顶部字段名),但**没有文本框** —
-// 只渲染一个跨满宽度的下拉按钮,视觉上比"文本框 + 旁边小菜单"更直白。
-private struct TranslationModelMenu: View {
+// 之前是纯下拉框("用户输错模型名肯定用不了"),但把 /v1/models 不可用
+// 的场景堵死了 — 一些 OpenAI 兼容站点/网关不实现这个端点,列表永远
+// 拉不下来,模型名就没法填。改回"文本框为主 + 下拉为辅":
+//   - TextField 手动输入(0.5s debounce + 编辑中防外部覆盖,同
+//     DebouncedHostRow 模式)
+//   - 右侧紧凑下拉按钮:列表可用时快速选择,选中填入文本框
+//   - fetched == nil 不再显示假 spinner("正在获取"却从没发过请求),
+//     菜单里是可点的"获取模型列表"
+
+/// 模型名手动输入框 — debounce 提交 + 编辑中不被外部值覆盖。
+/// 非 private:ModelPane 的"其他…"ASR 模型输入框也用它(那边之前每个
+/// 按键立即 writeField 写盘 + reload,3s 轮询回读还会覆盖正在打的字)。
+struct DebouncedModelField: View {
+    let placeholder: LocalizedStringKey
+    let current: String
+    let onCommit: (String) -> Void
+
+    @State private var draft: String = ""
+    @State private var initialized = false
+    @State private var pendingCommit: Task<Void, Never>?
+
+    var body: some View {
+        TextField(placeholder, text: $draft)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, design: .monospaced))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
+            )
+            .onChange(of: draft) { _, newValue in
+                schedule(newValue)
+            }
+            .task {
+                if !initialized {
+                    draft = current
+                    initialized = true
+                }
+            }
+            .onChange(of: current) { _, newValue in
+                // 外部变更(下拉选中/文件回流)同步进草稿;编辑中不覆盖。
+                if pendingCommit == nil && newValue != draft {
+                    draft = newValue
+                }
+            }
+            .onDisappear {
+                pendingCommit?.cancel()
+                pendingCommit = nil
+                if draft != current { onCommit(draft) }
+            }
+    }
+
+    private func schedule(_ value: String) {
+        pendingCommit?.cancel()
+        pendingCommit = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            if Task.isCancelled { return }
+            if value != current { onCommit(value) }
+            pendingCommit = nil
+        }
+    }
+}
+
+/// 列表下拉按钮 — 从 /v1/models 拉到的列表里快速选择。紧凑图标按钮,
+/// 文本显示交给旁边的 DebouncedModelField。
+private struct ModelListMenu: View {
     let fetched: Bool?
     let models: [String]
     let current: String
     let onFetch: () -> Void
     let onPick: (String) -> Void
-    /// URL 为空时直接显示「请先填写翻译服务地址」,不显示 spinner/不调 fetch。
-    /// 避免「没填 URL 失焦 → fetched 跳 nil → 假 spinner 转」的误导。
     let urlIsEmpty: Bool
 
     var body: some View {
         Menu {
             if urlIsEmpty {
-                // URL 为空 → 整个 dropdown 是 disabled 状态,无操作。
-                // 让用户点也没反应(强制他们先填 URL),点不到才算干净。
                 Text("请先填写翻译服务地址")
             } else if fetched != true {
-                // 没拉过 / 拉失败 → 整个 dropdown 都是「重试」入口。
-                // 用 let titleKey: LocalizedStringKey 让 Label 走本地化表;
-                // 直接 Label(<ternary ? "a" : "b">, ...) 会推断成 String verbatim。
+                // nil = 从未拉过(不是"正在拉"),false = 拉失败。
+                // 都给一个显式的动作入口。
                 let titleKey: LocalizedStringKey = fetched == false
                     ? "拉取失败 — 重试"
-                    : "正在获取模型…"
-                let iconName = fetched == false ? "arrow.clockwise" : "arrow.triangle.2.circlepath"
+                    : "获取模型列表"
                 Button {
                     onFetch()
                 } label: {
-                    Label(titleKey, systemImage: iconName)
+                    Label(titleKey, systemImage: "arrow.clockwise")
                 }
+                Text("站点不提供 /v1/models 时请直接在左侧输入模型名")
             } else if models.isEmpty {
-                // 拉成功但该节点没暴露 /v1/models
                 Button {
                     onFetch()
                 } label: {
                     Label("未找到模型 — 重试", systemImage: "arrow.clockwise")
                 }
+                Text("该节点未通过 /v1/models 返回模型,请在左侧手动输入")
             } else {
                 ForEach(models, id: \.self) { id in
                     Button {
@@ -763,26 +888,14 @@ private struct TranslationModelMenu: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Text(displayText)
-                    .font(.system(size: 13))
-                    .foregroundColor(displayColor)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 4)
-                if !urlIsEmpty && fetched == nil {
-                    // 正在 fetch — 显示 spinner 让用户知道"在拉"
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                } else {
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                }
+            HStack(spacing: 3) {
+                Image(systemName: "list.bullet")
+                Image(systemName: "chevron.up.chevron.down")
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .font(.system(size: 11))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
             .background(
                 RoundedRectangle(cornerRadius: 7, style: .continuous)
                     .fill(Color(nsColor: .textBackgroundColor))
@@ -793,67 +906,26 @@ private struct TranslationModelMenu: View {
             )
         }
         .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)  // 自己画 chevron,避免系统重复
-        .fixedSize(horizontal: false, vertical: true)
+        .menuIndicator(.hidden)
+        .fixedSize()
         .help(helpText)
     }
 
-    /// 改成 LocalizedStringKey,让 Text(displayText) / .help(helpText) 走本地化表。
-    /// 之前 String → Text(_:String) verbatim,中文 fallback 永远不变。
-    private var displayText: LocalizedStringKey {
-        if urlIsEmpty {
-            return "请先填写翻译服务地址"
-        }
-        if fetched != true {
-            return fetched == false ? "拉取失败 — 点击重试" : "正在获取模型列表…"
-        }
-        if models.isEmpty {
-            return "未找到模型 — 点击重试"
-        }
-        if current.isEmpty {
-            return "选择模型"
-        }
-        // current 是运行时模型 id (e.g. "mlx-community/Qwen3-ASR-0.6B-4bit") —
-        // 不参与本地化表,直接返回 verbatim。LocalizedStringKey 也是 ExpressibleByStringLiteral,
-        // 但这里强制用 Text(verbatim:) 走 verbatim 路径,避免被当 key 查表(查不到也只 fallback 到字面量)。
-        // 实际:return current 走 LocalizedStringKey 路径,查表不命中 → fallback 字面量 = current,等价 verbatim。
-        return LocalizedStringKey(stringLiteral: current)
-    }
-
-    private var displayColor: Color {
-        if urlIsEmpty {
-            return .secondary
-        }
-        if current.isEmpty && fetched == true && !models.isEmpty {
-            return .secondary  // 没选 + 有可选 → 灰色 placeholder
-        }
-        if fetched != true {
-            return .secondary
-        }
-        return .primary
-    }
-
-    /// 返回 Text 而非 LocalizedStringKey,因为最后一条带 models.count 插值需要拼接
-    /// (verbatim 数字 + 本地化片段)。.help() 接收 Text 也 OK。
     private var helpText: Text {
         if urlIsEmpty {
-            return Text("请先在上方填写翻译服务地址,失焦后会自动拉取该节点的模型列表")
+            return Text("请先在上方填写翻译服务地址")
         }
         if fetched != true {
-            return Text("改完翻译服务地址后,失焦会自动拉取该节点的模型列表")
+            return Text("从该节点的 /v1/models 拉取可选模型列表;站点不提供该端点时直接手动输入")
         }
         if models.isEmpty {
             return Text("该节点未通过 /v1/models 返回任何模型")
         }
-        // 动态插值:数字 verbatim + 前缀/后缀本地化
-        return Text("已从外接翻译服务加载 ") + Text("\(models.count)") + Text(" 个模型,点击切换")
+        return Text("已加载 ") + Text("\(models.count)") + Text(" 个模型,点击选择")
     }
 }
 
-/// Translation model 行 — 取代 hostRow 在 model 行的角色。
-/// 渲染 label (顶部字段名) + 占满宽度的下拉框。
-/// urlIsEmpty:绑定的 URL 为空时,UI 显式显示「请先填写翻译服务地址」
-/// (不让 fetched == nil 误显 spinner)。
+/// Translation model 行:label + 可输入文本框 + 列表下拉按钮。
 /// `label` 走 LocalizedStringKey,中文字面量即自动本地化。
 private func modelRow(
     icon: String,
@@ -873,7 +945,12 @@ private func modelRow(
             Image(systemName: icon)
                 .foregroundColor(.secondary)
                 .frame(width: 16)
-            TranslationModelMenu(
+            DebouncedModelField(
+                placeholder: "如 hy-mt2-7b（可手动输入或从右侧列表选择）",
+                current: current,
+                onCommit: onPick
+            )
+            ModelListMenu(
                 fetched: fetched,
                 models: models,
                 current: current,
