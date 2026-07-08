@@ -96,6 +96,13 @@ def _model_local_path(model_id: str) -> str:
     return os.path.join(MODELS_DIR, safe)
 
 
+class DownloadCancelled(Exception):
+    """用户取消下载。从进度钩子(JsonlProgress.update → tracker.add_bytes)
+    里抛出 — 那是 snapshot_download 过程中唯一的逐 chunk 回调点,也是
+    唯一能从外部中断 huggingface_hub 下载线程的地方。异常经 hf 的
+    线程池传播回 snapshot_download 抛出,_run() 捕获后静默清退。"""
+
+
 # ── 自定义 tqdm 类：实时写 JSONL 进度 ──────────────────────────────────
 # huggingface_hub 对每个文件创建一个 JsonlProgress 实例。
 # 第一个文件下完时 .close() 被调——但整个下载可能还有几十个文件。
@@ -118,10 +125,15 @@ class _ProgressTracker:
     - 并发下载会互相串改
     - 串行下载第二个模型会接着第一个模型的 _bytes_downloaded 累加
     - 改用类实例属性，每个 DownloadTask 实例自己持有一个
+
+    cancelled: 所属 DownloadTask 的取消标记。add_bytes 在每个 chunk 检查,
+    置位即抛 DownloadCancelled 真正中断下载(之前取消只是设标记,
+    snapshot_download 从不检查,线程会把整个模型偷偷下完)。
     """
 
-    def __init__(self):
+    def __init__(self, cancelled: "threading.Event | None" = None):
         self._lock = threading.Lock()
+        self.cancelled = cancelled
         self.total_bytes: int = 0        # 所有文件总大小
         self.downloaded_bytes: int = 0   # 累计已下载
         self.last_emitted_pct: float = -1.0
@@ -140,6 +152,11 @@ class _ProgressTracker:
 
     def add_bytes(self, n: int, model_id: str):
         """每个 chunk 后调用：累加字节，pct 变化 >= 1% 时写 JSONL。"""
+        if self.cancelled is not None and self.cancelled.is_set():
+            # 用户已取消:停发 progress(cancelled 事件已发,再发 progress
+            # 会把 macui 的状态从"已取消"翻回"下载中"),并抛异常让
+            # huggingface_hub 的下载线程立刻退出。
+            raise DownloadCancelled(model_id)
         with self._lock:
             self.downloaded_bytes += n
             if self.total_bytes <= 0:
@@ -288,11 +305,12 @@ class DownloadTask:
             _log(f"模型已存在: {self.local_path}（有 .complete 标记），跳过下载")
             _emit_event("completed", self.model_id, total_bytes=0, skipped=True)
             return
-        # 残缺目录：清理 + 重新下载
+        # 残缺目录(无 .complete 标记但有内容 = 上次取消/失败留下的)
+        # **不再 rmtree** — huggingface_hub 的 local_dir 下载自带断点续传
+        # (etag 校验 + .cache 元数据):重下会跳过已完成的分片、续传半截
+        # 文件。之前"残缺=删了重来"让取消的代价变成整个模型重下。
         if os.path.exists(self.local_path) and os.listdir(self.local_path):
-            _log(f"模型目录残缺: {self.local_path}，清理后重新下载")
-            import shutil
-            shutil.rmtree(self.local_path, ignore_errors=True)
+            _log(f"模型目录有残留: {self.local_path}，断点续传")
         _emit_event("started", self.model_id)
         self.thread = threading.Thread(
             target=self._run,
@@ -317,7 +335,9 @@ class DownloadTask:
             # 注册本任务的 tracker——JsonlProgress.update() 通过 _trackers_by_model
             # 字典找到对应的 tracker 累加字节。
             # 之前用模块级 globals 会在并发/串行下载时互相串改。
-            tracker = _ProgressTracker()
+            # 传入 cancelled Event:每 chunk 检查,取消时从进度钩子抛
+            # DownloadCancelled 真正中断下载线程。
+            tracker = _ProgressTracker(cancelled=self.cancelled)
             with _trackers_lock:
                 _trackers_by_model[self.model_id] = tracker
 
@@ -345,10 +365,11 @@ class DownloadTask:
                     cache_dir=os.path.join(MODELS_DIR, ".cache"),
                     tqdm_class=make_tqdm_class(self.model_id),
                 )
-
-                if self.cancelled.is_set():
-                    _log(f"下载已取消: {self.model_id}")
-                    return
+                # 注:走到这里 = 下载完整结束。即使取消请求恰好在最后
+                # 一个 chunk 之后到达(异常没机会抛),模型也已经下完 —
+                # 正常走 completed 流程(写 .complete),别浪费这次下载。
+                # 之前这里检查 cancelled 直接 return,导致"取消太晚"的
+                # 完整模型不写标记,下次点下载被当残缺目录 rmtree 重下。
 
                 # snapshot_download 返回后统一写 100%（不信任单个文件的 close）
                 if tracker.total_bytes > 0:
@@ -386,7 +407,18 @@ class DownloadTask:
                 except OSError as e:
                     _log(f"写 .complete 标记失败: {e}")
                 _log(f"下载完成: {self.model_id} → {self.local_path}")
+            except DownloadCancelled:
+                # 用户取消 — cancelled 事件已在 cancel() 里发过,这里
+                # 静默清退即可。半截文件留在 local_dir + .cache,下次
+                # 下载断点续传,零浪费。
+                _log(f"下载已取消(进度钩子中断): {self.model_id}")
+                return
             except Exception as e:
+                if self.cancelled.is_set():
+                    # 取消引发的次生异常(hf 线程池包装/连接中断等),
+                    # 一律视为取消,不发 failed(UI 已显示"已取消")。
+                    _log(f"下载已取消(次生异常 {type(e).__name__}): {self.model_id}")
+                    return
                 _log(f"下载失败: {self.model_id} - {e}")
                 _log(traceback.format_exc())
                 _emit_event("failed", self.model_id, error=str(e))
@@ -408,6 +440,10 @@ class RequestWatcher:
         self.active_downloads: dict[str, DownloadTask] = {}
         self.lock = threading.Lock()
         self._last_mtime = 0.0
+        # 取消后旧线程还没退干净时用户又点了下载 → 请求进这里,
+        # cleanup_finished 清掉死线程后自动重放。之前这种请求被
+        # "已在下载"静默吞掉,UI 没有任何反馈,看起来像下载按钮卡死。
+        self._pending_download: str | None = None
 
     def _read_request(self) -> dict | None:
         """读 request 文件，返回解析后的 dict 或 None。"""
@@ -438,12 +474,18 @@ class RequestWatcher:
             existing = self.active_downloads.get(model_id)
             if action == "download":
                 if existing and existing.thread and existing.thread.is_alive():
-                    _log(f"已在下载: {model_id}，忽略新请求")
+                    if existing.cancelled.is_set():
+                        # 旧线程正在取消退出(进度钩子的异常还没抛完),
+                        # 请求排队,cleanup_finished 清掉死线程后重放。
+                        self._pending_download = model_id
+                        _log(f"旧下载正在取消退出,{model_id} 排队等待重放")
+                    else:
+                        _log(f"已在下载: {model_id}，忽略新请求")
                     return
-                task = DownloadTask(model_id)
-                self.active_downloads[model_id] = task
-                task.start()
+                self._start_download(model_id)
             elif action == "cancel":
+                if self._pending_download == model_id:
+                    self._pending_download = None  # 排队中的重放也一并取消
                 if existing:
                     existing.cancel()
                 else:
@@ -451,12 +493,24 @@ class RequestWatcher:
             else:
                 _log(f"未知 action: {action}")
 
+    def _start_download(self, model_id: str):
+        """创建并启动下载任务。调用方必须已持有 self.lock。"""
+        task = DownloadTask(model_id)
+        self.active_downloads[model_id] = task
+        task.start()
+
     def cleanup_finished(self):
-        """清理已完成/失败的下载任务。"""
+        """清理已完成/失败的下载任务,重放排队中的下载请求。"""
         with self.lock:
             for model_id, task in list(self.active_downloads.items()):
                 if task.thread is None or not task.thread.is_alive():
                     del self.active_downloads[model_id]
+                    if self._pending_download == model_id:
+                        # 取消退出期间用户点过下载 → 现在旧线程退干净了,
+                        # 自动重放(断点续传,已下载的分片不会重下)。
+                        self._pending_download = None
+                        _log(f"重放下载请求: {model_id}")
+                        self._start_download(model_id)
 
 
 # ── 主循环 ──────────────────────────────────────────────────────────────
