@@ -24,8 +24,10 @@
 # 间接依赖说明:
 # - fsspec / huggingface_hub / hf-xet / tqdm / regex / filelock / PyYAML /
 #   typing_extensions / protobuf / packaging: huggingface_hub 的依赖链
-# - anyio / httpcore / h11 / httpx / certifi / idna / charset-normalizer /
-#   urllib3: huggingface_hub 异步下载的依赖 (translator 走 stdlib urllib.request)
+# - anyio / httpcore / h11 / certifi / idna / charset-normalizer /
+#   urllib3: huggingface_hub 异步下载的依赖
+# - httpx: **直接依赖** — translator_hy_mt2.py 的 keep-alive 连接池
+#   (2026-07-09 起,不再走 stdlib urllib.request;别当间接依赖删)
 # - mlx / mlx-metal: mlx-audio + mlx-lm 的运行时
 # - setuptools / wheel / pip: 基础工具,保留
 #
@@ -52,7 +54,8 @@ tqdm==4.68.3
 PyYAML==6.0.3
 typing_extensions==4.15.0
 
-# 网络栈 (huggingface_hub 间接依赖;translator 走 stdlib urllib.request)
+# 网络栈 (httpx 是 translator 直接依赖 — keep-alive 连接池;其余是
+# huggingface_hub 间接依赖)
 httpx==0.28.1
 httpcore==1.0.9
 h11==0.16.0
