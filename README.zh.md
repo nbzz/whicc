@@ -226,9 +226,7 @@ MIT License — 见 [LICENSE](LICENSE)。
 <!-- CONTRIBUTING -->
 ## 顶级贡献者
 
-<a href="https://github.com/nbzz/whicc/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=nbzz/whicc&max=5&anon=0&columns=5" alt="contributors" />
-</a>
+[![Contributors](https://ghcontrib.pages.dev/image?repo=nbzz%2Fwhicc)](https://github.com/nbzz/whicc/graphs/contributors)
 
 <p align="right">(<a href="#readme-top">回到顶部</a>)</p>
 
