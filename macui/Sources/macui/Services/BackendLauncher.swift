@@ -521,7 +521,12 @@ final class BackendLauncher {
         var process: Process
         var restarts: Int
         var lastRestartAt: Date?
+        /// "等模型"提示(exit 3)只发一次,避免每次重试都刷一条通知。
+        var waitingModelNoticeShown = false
     }
+
+    /// whicc.py 的"ASR 模型未下载/残缺"退出码 — 配置性等待,不是故障。
+    private static let _exitWaitingModel: Int32 = 3
 
     private static var _monitored: [MonitoredProc] = []
     private static let _monitorLock = NSLock()
@@ -552,27 +557,62 @@ final class BackendLauncher {
             let m = _monitored[i]
             guard !m.process.isRunning else { continue }
             let code = m.process.terminationStatus
-            // 退避:快速重启次数耗尽后,每 _slowRetryInterval 才试一次
-            // (whicc.py 因模型未下载退出 → 用户下载完后自动恢复)。
+            let waitingModel = (code == _exitWaitingModel)
+            // 退避:快速重启次数耗尽后,每 _slowRetryInterval 才试一次。
+            // 例外:"等模型"退出(code 3)时,models 目录一出现新的
+            // .complete 标记(下载刚完成)就立即重启 — 用户下载完模型
+            // 秒恢复,不用干等慢速重试窗口。
             if m.restarts >= _fastRestarts,
                let last = m.lastRestartAt,
                now.timeIntervalSince(last) < _slowRetryInterval {
-                continue
+                if !(waitingModel && modelCompletedSince(last)) {
+                    continue
+                }
+                logAndStderr("[monitor] model download detected, restarting \(m.backend.script) immediately")
             }
             _monitored[i].restarts += 1
             _monitored[i].lastRestartAt = now
             let n = _monitored[i].restarts
             logAndStderr("[monitor] \(m.backend.script) exited (code \(code)), "
                          + "restart #\(n)\(n > _fastRestarts ? " (slow retry)" : "")")
-            appendBackendNotice(
-                zh: "⚠️ 后端 \(m.backend.script) 异常退出(code \(code)),自动重启中 #\(n)",
-                en: "⚠️ Backend \(m.backend.script) exited (code \(code)); auto-restarting #\(n)")
+            if waitingModel {
+                // 配置性等待,不是故障 — 给指引而不是吓人的"异常退出";
+                // 只发一次,静默重试。
+                if !m.waitingModelNoticeShown {
+                    _monitored[i].waitingModelNoticeShown = true
+                    appendBackendNotice(
+                        zh: "⏳ 语音识别模型未就绪 — 请到 设置 → 模型 页下载;完成后自动开始识别",
+                        en: "⏳ ASR model not ready — download it in Settings → Models; recognition starts automatically once done")
+                }
+            } else {
+                appendBackendNotice(
+                    zh: "⚠️ 后端 \(m.backend.script) 异常退出(code \(code)),自动重启中 #\(n)",
+                    en: "⚠️ Backend \(m.backend.script) exited (code \(code)); auto-restarting #\(n)")
+            }
             if let p = spawn(python: ctx.python, src: ctx.src,
                              backend: m.backend, logDir: ctx.logDir,
                              truncateLogs: false) {
                 _monitored[i].process = p
             }
         }
+    }
+
+    /// models 目录里是否有比 `since` 更新的 `.complete` 标记
+    /// (= 一次模型下载刚刚完成)。监控用它把"等模型"的慢速重试
+    /// 提前成即时恢复。
+    private static func modelCompletedSince(_ since: Date) -> Bool {
+        let modelsDir = NSHomeDirectory() + "/Library/Application Support/whicc/models"
+        let fm = FileManager.default
+        guard let entries = try? fm.contentsOfDirectory(atPath: modelsDir) else { return false }
+        for name in entries where name.hasSuffix(".complete") {
+            let path = modelsDir + "/" + name
+            if let attrs = try? fm.attributesOfItem(atPath: path),
+               let mtime = attrs[.modificationDate] as? Date,
+               mtime > since {
+                return true
+            }
+        }
+        return false
     }
 
     /// 往 translation_events.jsonl 追加一条通知(translation_final 事件),

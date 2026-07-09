@@ -859,7 +859,10 @@ def main():
                 logger.log_status(str(e2))
                 # 不 raise — 让 whicc.py 干净退出留下 log 痕迹,
                 # macui 能读到 model_load_failed status 提示用户。
-                _exit_with_audio_cleanup(1)
+                # exit 3 = "等模型"(未下载/残缺),不是程序故障 —
+                # BackendLauncher 监控按 code 区分:3 → 提示用户去下载
+                # + 检测到模型下载完成后立即重启;其他 → 崩溃重启。
+                _exit_with_audio_cleanup(3)
         else:
             # 本地也没下载 nemotron → 让用户去 macui 下载
             print(f"[model-load] 本地 nemotron 不存在: {local_nemotron}",
@@ -868,7 +871,7 @@ def main():
                   file=sys.stderr, flush=True)
             logger.log_status("model_load_failed")
             logger.log_status(f"local nemotron not found at {local_nemotron}")
-            _exit_with_audio_cleanup(1)
+            _exit_with_audio_cleanup(3)  # 3 = 等模型,见上方注释
 
     if fallback_used:
         print(f"[model-load] fallback 成功,继续运行", flush=True)
