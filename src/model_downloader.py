@@ -22,6 +22,7 @@ macui 设置界面通过两个文件与本守护进程通信：
 进度事件，macui 端读到后实时更新 ProgressView，不需要靠目录大小估算。
 """
 import argparse
+import fcntl
 import json
 import os
 import sys
@@ -355,6 +356,85 @@ class DownloadTask:
         self.cancelled.set()
         _emit_event("cancelled", self.model_id)
 
+    def _direct_download(self, endpoint: str, tracker: "_ProgressTracker"):
+        """绕过 huggingface_hub 的元数据校验,逐文件 GET
+        {endpoint}/{repo}/resolve/main/{fname},HTTP Range 断点续传。
+
+        为什么存在:hf-mirror 的数据面(resolve URL,302→CDN)一直可用,
+        但它代理的 HF 专属响应头(x-repo-commit / x-linked-etag)对部分
+        repo(实测 mlx-community/nemotron)丢失,huggingface_hub 1.x 严格
+        校验 → FileMetadataError,整个 snapshot_download 失败;而官方源在
+        需要镜像的网络环境里慢到不可用。这里只信任"文件字节数对上
+        model_info 宣告的 size",完整性由此校验 + 模型加载时 safetensors
+        自身的头校验兜底。
+
+        顺带收编 hf_hub 留下的 .incomplete 半截文件:1.x 的 incomplete
+        文件名带随机 session 段,进程重启后连 hf_hub 自己都不续传它
+        (另建 0 字节新文件),几百 MB 白下 — 按文件名里的 lfs sha256
+        匹配,rename 到最终位置接着 Range 续传。
+        """
+        import urllib.parse
+        import urllib.request
+        from huggingface_hub import HfApi
+
+        info = HfApi(endpoint=endpoint).model_info(
+            self.model_id, files_metadata=True)
+        download_cache = os.path.join(
+            self.local_path, ".cache", "huggingface", "download")
+        for s in info.siblings:
+            fname = s.rfilename
+            expected = s.size or 0
+            dest = os.path.join(self.local_path, fname)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            if expected > 0 and os.path.exists(dest) \
+                    and os.path.getsize(dest) == expected:
+                continue  # 已完整(字节已计入断点续传起点)
+            sha = getattr(getattr(s, "lfs", None), "sha256", None)
+            if sha and not os.path.exists(dest):
+                try:
+                    cands = [os.path.join(download_cache, n)
+                             for n in os.listdir(download_cache)
+                             if sha in n and n.endswith(".incomplete")
+                             and os.path.getsize(os.path.join(download_cache, n)) > 0]
+                    if cands:
+                        best = max(cands, key=os.path.getsize)
+                        os.replace(best, dest)
+                        _log(f"收编 hf 半截文件续传: {fname} ← "
+                             f"{os.path.basename(best)} ({os.path.getsize(dest)} bytes)")
+                except OSError:
+                    pass
+            have = os.path.getsize(dest) if os.path.exists(dest) else 0
+            if expected > 0 and have > expected:
+                have = 0  # 本地比远端大 = 脏数据,重下
+            url = (f"{endpoint.rstrip('/')}/{self.model_id}"
+                   f"/resolve/main/{urllib.parse.quote(fname)}")
+            req = urllib.request.Request(url)
+            if have > 0:
+                req.add_header("Range", f"bytes={have}-")
+            resp = urllib.request.urlopen(req, timeout=60)
+            try:
+                if have > 0 and resp.status != 206:
+                    # 服务器没接 Range → 从头下。进度回退 have 字节;
+                    # 直下是单线程循环,没有并发 add_bytes,无锁直改安全。
+                    tracker.downloaded_bytes = max(
+                        0, tracker.downloaded_bytes - have)
+                    have = 0
+                with open(dest, "ab" if have > 0 else "wb") as f:
+                    while True:
+                        chunk = resp.read(256 * 1024)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        # add_bytes 顺带检查取消标记(抛 DownloadCancelled)
+                        # + 按节奏发 progress 事件
+                        tracker.add_bytes(len(chunk), self.model_id)
+            finally:
+                resp.close()
+            final = os.path.getsize(dest)
+            if expected > 0 and final != expected:
+                raise OSError(f"直下大小不符: {fname} {final} != {expected}")
+            _log(f"直下完成: {fname} ({final} bytes)")
+
     def _run(self):
         """实际下载逻辑，在工作线程跑。"""
         try:
@@ -378,6 +458,21 @@ class DownloadTask:
             tracker = _ProgressTracker(cancelled=self.cancelled)
             with _trackers_lock:
                 _trackers_by_model[self.model_id] = tracker
+
+            # 断点续传起点:目录已有字节(上次下到一半的分片,含
+            # local_dir/.cache 下的 .incomplete)计入进度 —
+            # huggingface_hub 只对本次新下的字节调 update,之前重启
+            # 下载后进度条从 0% 起跳,看起来像"之前全白下了"。
+            existing = 0
+            for dp, _dns, fns in os.walk(self.local_path):
+                for fn in fns:
+                    try:
+                        existing += os.path.getsize(os.path.join(dp, fn))
+                    except OSError:
+                        pass
+            if existing > 0:
+                tracker.downloaded_bytes = existing
+                _log(f"断点续传起点: {self.model_id} 已有 {existing} bytes")
 
             try:
                 # 下载前：用 HfApi 拿所有文件总大小，初始化 tracker
@@ -422,19 +517,28 @@ class DownloadTask:
                 except Exception as e:
                     if endpoint is None or self.cancelled.is_set():
                         raise
-                    # 镜像下载失败自动回退官方源重试:实测 hf-mirror 对
-                    # 部分 repo(如 mlx-community/nemotron)直接 308 回
-                    # 官方且丢 x-repo-commit 等元数据头,huggingface_hub
-                    # 1.x 报 LocalEntryNotFoundError / 长时间挂起 — 表现
-                    # 为"下载一直卡 0%"。回退用断点续传,已下载分片不浪费。
-                    _log(f"镜像下载失败({type(e).__name__}),回退官方源重试: "
-                         f"{self.model_id}")
-                    snapshot_download(
-                        repo_id=self.model_id,
-                        local_dir=self.local_path,
-                        cache_dir=os.path.join(MODELS_DIR, ".cache"),
-                        tqdm_class=make_tqdm_class(self.model_id),
-                    )
+                    # 镜像 hf_hub 失败 → 先试"镜像 resolve 直下"再回退官方。
+                    # 实测 hf-mirror 对部分 repo(如 mlx-community/nemotron)
+                    # 丢 x-repo-commit 等元数据头,huggingface_hub 1.x 报
+                    # FileMetadataError / LocalEntryNotFoundError — 但数据面
+                    # (resolve URL)完全可用(HTTP 206,实测 ~600KB/s)。
+                    # 官方源在需要镜像的网络环境里往往龟速(实测 ~2KB/s,
+                    # snapshot_download 不报错就是无限慢),只作最后兜底。
+                    _log(f"镜像 hf_hub 下载失败({type(e).__name__}),"
+                         f"尝试镜像直下: {self.model_id}")
+                    try:
+                        self._direct_download(endpoint, tracker)
+                    except DownloadCancelled:
+                        raise
+                    except Exception as e2:
+                        _log(f"镜像直下失败({type(e2).__name__}: {e2}),"
+                             f"回退官方源重试: {self.model_id}")
+                        snapshot_download(
+                            repo_id=self.model_id,
+                            local_dir=self.local_path,
+                            cache_dir=os.path.join(MODELS_DIR, ".cache"),
+                            tqdm_class=make_tqdm_class(self.model_id),
+                        )
                 # 注:走到这里 = 下载完整结束。即使取消请求恰好在最后
                 # 一个 chunk 之后到达(异常没机会抛),模型也已经下完 —
                 # 正常走 completed 流程(写 .complete),别浪费这次下载。
@@ -583,6 +687,29 @@ class RequestWatcher:
                         self._start_download(model_id)
 
 
+# ── 单实例锁 ────────────────────────────────────────────────────────────
+def _acquire_singleton_lock(lock_path: str) -> int:
+    """flock 单实例锁。多个 daemon 并发时(App 崩溃残留 / 重复启动),
+    它们会同时 poll 同一个 request 文件、往同一个 local_dir 下载同一个
+    模型 — 进程间抢 huggingface_hub 的文件锁互相卡死,progress JSONL
+    被多方交错追加,UI 状态反复横跳,表现为"下载永远卡住"。
+
+    拿不到锁时阻塞等待(不退出):持锁的旧实例退出后自动接管,
+    避免"退出 → 被 BackendLauncher 监控当异常重启"的循环。
+    返回的 fd 故意不关 — 进程存活期间持锁,退出(含被 SIGKILL)由
+    内核自动释放,没有 stale lock 问题。"""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _log("另一个 model_downloader 实例持有锁,阻塞等待接管…")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        _log("旧实例已退出,本进程接管")
+    os.ftruncate(fd, 0)
+    os.write(fd, str(os.getpid()).encode())
+    return fd
+
+
 # ── 主循环 ──────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="模型下载守护进程")
@@ -601,6 +728,9 @@ def main():
 
     os.makedirs(OUT_DIR, exist_ok=True)
     os.makedirs(MODELS_DIR, exist_ok=True)
+
+    # 单实例:锁 fd 存变量防 GC 关闭(关 fd = 放锁)。
+    _lock_fd = _acquire_singleton_lock(os.path.join(OUT_DIR, "model_downloader.lock"))  # noqa: F841
 
     # 不要在这里清空旧进度文件——BackendLauncher 已经在启动前清空了，
     # 避免 daemon 重启时误执行上次测试残留的 request。
