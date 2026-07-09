@@ -911,6 +911,27 @@ def main():
     f_zh = open(zh_txt_path, "a", encoding="utf-8")
     f_bi = open(bilingual_path, "a", encoding="utf-8")
 
+    if translator is None:
+        # 一次性告知 UI 进入"仅原文"模式 — 正式字幕走上面的原文透传,
+        # 但用户得知道译文为什么没了(走 translation_final 通道,跟
+        # BackendLauncher.appendBackendNotice 同款形态)。
+        _notice = {
+            "event_type": "translation_final",
+            "source_key": f"notice-{int(time.time() * 1000)}",
+            "source_update_mode": "reset_full",
+            "source_text": "Translation service unreachable — captions show "
+                           "source only; auto-recovers once reachable",
+            "translated_full_text": "⚠️ 翻译服务不可达,字幕暂只显示原文;"
+                                    "连上后自动恢复(设置 → 服务配置 可检查地址)",
+            "translate_ms": 0,
+            "shared_prefix_len": 0,
+            "glossary_hits": [],
+            "retried": False,
+            "fallback_reason": "",
+        }
+        f_trans.write(json.dumps(_notice, ensure_ascii=False) + "\n")
+        f_trans.flush()
+
     counts = {"translated": 0, "errors": 0, "deltas": 0, "fallbacks": 0}
     is_partial_mode = args.mode == "partial"
     out_lock = threading.Lock()
@@ -1220,10 +1241,36 @@ def main():
 
                 etype = event.get("event_type")
 
-                # 等待模式:服务不可达期间跳过事件(offset 照常推进,不
-                # 积压 — 实时字幕翻旧内容没有意义),字幕区继续显示
-                # ASR 原文 draft。
+                # 等待模式:服务不可达期间不翻译(offset 照常推进,不
+                # 积压 — 实时字幕翻旧内容没有意义),但 ASR final 必须
+                # **原文透传** — UI 正式字幕的唯一 commit 通道是
+                # translation_final(OverlayState.applyFinal),之前这里
+                # 直接 continue,以为"字幕区还有 ASR 原文 draft"顶着,
+                # 实际 final 一发 draft 就走清理链,翻译节点不可达时
+                # 用户一个字都看不到。译文发空串:SubtitleCaption 对空
+                # 译文只渲染原文行,连上后自动恢复双语。
                 if translator is None:
+                    if etype == "final" and event.get("accepted", False):
+                        src_text = event.get("text", "").strip()
+                        if src_text:
+                            passthrough = {
+                                "event_type": "translation_final",
+                                "source_key": _source_key(event),
+                                "source_update_mode": "no_translator_passthrough",
+                                "source_text": src_text,
+                                "delta_source_text": src_text,
+                                "translated_delta_text": "",
+                                "translated_full_text": "",
+                                "translate_ms": 0,
+                                "shared_prefix_len": 0,
+                                "glossary_hits": [],
+                                "retried": False,
+                                "fallback_reason": "translator_unavailable",
+                            }
+                            with out_lock:
+                                f_trans.write(json.dumps(
+                                    passthrough, ensure_ascii=False) + "\n")
+                                f_trans.flush()
                     continue
 
                 # ── partial 事件（partial 模式，异步翻译 + 显示）──
