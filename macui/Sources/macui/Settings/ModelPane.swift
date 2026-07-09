@@ -25,6 +25,7 @@ import AppKit
 struct ModelPane: View {
     @ObservedObject var modelState: ModelState
     @ObservedObject var downloadState: ModelDownloadState
+    @ObservedObject var langConfig: LangConfig
 
     var body: some View {
         SettingsDetailContainer {
@@ -68,7 +69,7 @@ struct ModelPane: View {
                 .foregroundColor(.secondary)
                 .padding(.horizontal, 4)
 
-            // 存储位置 + 在 Finder 中显示
+            // 存储位置 + 在 Finder 中显示 + 下载加速开关
             SettingsCard {
                 Text("存储位置")
                     .font(.system(size: 12, weight: .semibold))
@@ -85,6 +86,25 @@ struct ModelPane: View {
                     }
                     .controlSize(.small)
                 }
+                Divider()
+                // 下载加速:直连 huggingface.co 缓慢/受限的网络环境开这个,
+                // 模型下载走 hf-mirror.com 镜像。切换后下一次下载即生效
+                // (下载中的任务不受影响,取消重下即可走镜像 — 断点续传
+                // 不浪费已下载的部分)。
+                Toggle(isOn: Binding(
+                    get: { langConfig.hfMirrorEnabled },
+                    set: { langConfig.setHfMirrorEnabled($0) }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("下载加速（HF 镜像）")
+                            .font(.system(size: 12))
+                        Text("下载缓慢时开启，模型改走 hf-mirror.com；海外网络建议保持关闭")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
             }
 
             // 槽位 1：中文识别

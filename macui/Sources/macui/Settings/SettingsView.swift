@@ -79,7 +79,7 @@ struct SettingsView: View {
             switch selection ?? .server {
             case .appearance: AppearancePane(state: overlayState, langConfig: langConfig)
             case .server: ServerPane(langConfig: langConfig)
-            case .model:  ModelPane(modelState: modelState, downloadState: downloadState)
+            case .model:  ModelPane(modelState: modelState, downloadState: downloadState, langConfig: langConfig)
             case .hermes: HermesPane(state: state, langConfig: langConfig, eventAgent: eventAgent)
             }
         }

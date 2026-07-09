@@ -286,6 +286,22 @@ def make_tqdm_class(model_id: str):
 
 
 # ── 下载任务 ────────────────────────────────────────────────────────────
+HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
+
+
+def _hf_endpoint() -> str | None:
+    """读 lang_config.json 的下载加速开关。开启 → 返回镜像 endpoint,
+    关闭/读不到 → None(走 huggingface.co 官方)。每次下载时现读 —
+    用户在设置页切换开关后,下一次下载立即生效,不用重启 daemon。"""
+    try:
+        with open(os.path.join(OUT_DIR, "lang_config.json"), encoding="utf-8") as f:
+            if json.load(f).get("hf_mirror_enabled"):
+                return HF_MIRROR_ENDPOINT
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
 class DownloadTask:
     """单个下载任务：管理状态、进度、取消。"""
 
@@ -332,6 +348,13 @@ class DownloadTask:
 
             from huggingface_hub import snapshot_download, HfApi
 
+            # 下载加速:设置页开关开启时走 HF 镜像(直连 huggingface.co
+            # 缓慢/受限的网络环境)。endpoint 显式传参,不依赖
+            # HF_ENDPOINT 环境变量的 import 时机。
+            endpoint = _hf_endpoint()
+            if endpoint:
+                _log(f"下载加速已开启,走镜像: {endpoint}")
+
             # 注册本任务的 tracker——JsonlProgress.update() 通过 _trackers_by_model
             # 字典找到对应的 tracker 累加字节。
             # 之前用模块级 globals 会在并发/串行下载时互相串改。
@@ -343,7 +366,7 @@ class DownloadTask:
 
             try:
                 # 下载前：用 HfApi 拿所有文件总大小，初始化 tracker
-                api = HfApi()
+                api = HfApi(endpoint=endpoint)
                 info = api.model_info(self.model_id, files_metadata=True)
                 total = sum(s.size or 0 for s in info.siblings if s.size)
                 tracker.set_total(total)
@@ -364,6 +387,7 @@ class DownloadTask:
                     local_dir=self.local_path,
                     cache_dir=os.path.join(MODELS_DIR, ".cache"),
                     tqdm_class=make_tqdm_class(self.model_id),
+                    endpoint=endpoint,  # None = 官方,镜像开关见 _hf_endpoint
                 )
                 # 注:走到这里 = 下载完整结束。即使取消请求恰好在最后
                 # 一个 chunk 之后到达(异常没机会抛),模型也已经下完 —

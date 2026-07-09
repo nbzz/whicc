@@ -12,8 +12,6 @@ import re
 import json
 import time
 import argparse
-import tempfile
-import wave
 import subprocess
 import shlex
 import shutil
@@ -30,6 +28,16 @@ import sys
 # 让 python3 /path/to/src/whicc.py 这种直接调用方式能 import 同目录的
 # config.py / audio.py。
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# HF 镜像加速(设置页"下载加速"开关):whicc.py 的模型加载在本地缺模型
+# 时会走 huggingface_hub 下载 fallback。HF_ENDPOINT 在 huggingface_hub
+# **import 时**固化,必须在任何 hf/mlx_audio import 之前设好。
+try:
+    with open("/tmp/whicc-out/lang_config.json", encoding="utf-8") as _f:
+        if json.load(_f).get("hf_mirror_enabled"):
+            os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+except (OSError, json.JSONDecodeError):
+    pass
 
 from config import SEG_DIR, SAMPLE_RATE, BYTES_PER_SAMPLE, SEG_DURATION_SEC
 # audiotee 路径：项目内 ./bin/audiotee（持久化,不会像 /tmp 那样被清掉）。
@@ -204,17 +212,10 @@ def is_hallucination(text: str) -> bool:
                 return True
     return False
 
-# --------------- WAV 工具 ---------------
-
-def save_wav(samples: np.ndarray, path: str):
-    int16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
-    with wave.open(path, "w") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(int16.tobytes())
-
 # --------------- Nemotron / Qwen3 ---------------
+# (曾经这里有 save_wav — 每次推理先把 float32 量化成 int16 写临时 WAV
+# 再让模型读回。现在音频数组直传 generate(见 do_transcribe),整条管线
+# 零磁盘往返,且保留 float32 全精度,不再有 int16 量化损失。)
 
 _qwen3_model = None  # 预加载的 Qwen3 模型（懒初始化）
 
@@ -261,36 +262,39 @@ def _async_load_model(which: str, model_path: str, ready_event: threading.Event)
 
 
 def _warmup_model(model_path: str, which: str) -> None:
-    """对刚加载的模型做一次空推理 warmup（吸收 Metal kernel 编译延迟）"""
-    import tempfile, wave as _wave
-    tmp = os.path.join(tempfile.gettempdir(), f"whicc_warmup_{which}_{os.getpid()}.wav")
+    """对刚加载的模型做一次空推理 warmup（吸收 Metal kernel 编译延迟）。
+    数组直传,不经临时 WAV。"""
     samples = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
-    save_wav(samples, tmp)
     try:
         if which == "qwen3":
-            _do_transcribe_qwen3(tmp, language="auto", model_path=model_path)
+            _do_transcribe_qwen3(samples, language="auto", model_path=model_path)
         else:
-            _do_transcribe_nemotron(tmp, language="auto", model_path=model_path)
+            _do_transcribe_nemotron(samples, language="auto", model_path=model_path)
     except Exception:
         pass
-    finally:
-        try: os.unlink(tmp)
-        except OSError: pass
 
 
-def do_transcribe(wav_path: str, language: str = "en",
+def do_transcribe(audio, language: str = "en",
                   model: str = DEFAULT_MODEL,
                   backend: str = "nemotron") -> dict:
-    """转录（非流式）。backend: 'nemotron' 或 'qwen3'。"""
+    """转录（非流式）。backend: 'nemotron' 或 'qwen3'。
+
+    audio: WAV 路径(str) 或 float32 mono 16kHz 的 np.ndarray —
+    两个后端的 generate 都原生支持数组输入(Nemotron 收 mx.array,
+    Qwen3 直接收 ndarray),数组直传省掉"每次推理先写 WAV 再读回"
+    的磁盘往返(探针每 0.6s 一次)。
+    """
     if backend == "qwen3":
-        return _do_transcribe_qwen3(wav_path, language=language, model_path=model)
-    return _do_transcribe_nemotron(wav_path, language=language, model_path=model)
+        return _do_transcribe_qwen3(audio, language=language, model_path=model)
+    return _do_transcribe_nemotron(audio, language=language, model_path=model)
 
 
-def _do_transcribe_qwen3(wav_path: str, language: str = "en", model_path: str = "") -> dict:
-    """Qwen3 ASR 转录。"""
+def _do_transcribe_qwen3(audio, language: str = "en", model_path: str = "") -> dict:
+    """Qwen3 ASR 转录。audio: WAV 路径或 float32 16kHz ndarray
+    (Qwen3ASRModel.generate 原生接受 ndarray,采样率假定 16k 与
+    load_audio 默认一致)。"""
     m = _get_qwen3_model(model_path)
-    r = m.generate(wav_path, language=language, verbose=False)
+    r = m.generate(audio, language=language, verbose=False)
 
     text = r.text.strip() if r.text else ""
     # Qwen3 返回 language=['en']（列表），取第一个 — 但这个字段经常不准 (e.g. 中文
@@ -362,12 +366,17 @@ def _get_nemotron_model(model_path: str):
     return _nemotron_model
 
 
-def _do_transcribe_nemotron(wav_path: str, language: str = "en",
+def _do_transcribe_nemotron(audio, language: str = "en",
                             model_path: str = "") -> dict:
-    """Nemotron ASR 转录（非流式）。language='auto' 或空时自动检测。"""
+    """Nemotron ASR 转录（非流式）。language='auto' 或空时自动检测。
+    audio: WAV 路径或 float32 16kHz ndarray(generate 收 mx.array,
+    ndarray 在这里转一层 — mx.array 包装零拷贝级开销)。"""
     m = _get_nemotron_model(model_path)
+    if isinstance(audio, np.ndarray):
+        import mlx.core as mx
+        audio = mx.array(audio)
     lang_param = None if language in ("auto", "") else language
-    r = m.generate(wav_path, language=lang_param)
+    r = m.generate(audio, language=lang_param)
     text = r.text.strip() if r.text else ""
     sentences = r.sentences if hasattr(r, 'sentences') else []
     avg_lp = -0.3
@@ -883,21 +892,13 @@ def main():
             qwen3_fallback = True  # 标记可用，但不预加载
 
     # 模型 warmup：对空音频跑一次推理，吸收 Metal kernel 编译延迟
+    # (数组直传,不再经临时 WAV 落盘)
     print("模型预热中...", flush=True)
-    _warmup_wav = os.path.join(tempfile.gettempdir(), "_whicc_warmup.wav")
     _warmup_samples = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.float32)
-    save_wav(_warmup_samples, _warmup_wav)
     try:
-        if resolved_backend == "qwen3":
-            _m = _get_qwen3_model(resolved_model)
-            _m.generate(_warmup_wav, language="en", verbose=False)
-        else:  # nemotron
-            _get_nemotron_model(resolved_model).generate(_warmup_wav, language="en", verbose=False)
+        do_transcribe(_warmup_samples, language="en",
+                      model=resolved_model, backend=resolved_backend)
     except Exception:
-        pass
-    try:
-        os.unlink(_warmup_wav)
-    except OSError:
         pass
 
     # 注:BackendLauncher.waitForASRReady 扫日志找"模型就绪"关键词,
@@ -988,7 +989,6 @@ def main():
 
     signal.signal(signal.SIGHUP, _sighup_audio_swap)
 
-    tmp_wav = os.path.join(tempfile.gettempdir(), f"whicc_chunk_{os.getpid()}.wav")
     overlap_samples = int(SAMPLE_RATE * args.overlap_sec)
     next_seg = 0            # segdir 模式的段文件游标
     samples_ingested = 0    # 已消费样本总数 → 虚拟段号 = // SAMPLE_RATE
@@ -1073,12 +1073,10 @@ def main():
             tail_overlap = save_tail(samples)
             return
 
-        # 阶段 1: PCM 拼接 & WAV 落盘 (复用探针结果时连 WAV 都不用写)
+        # 阶段 1: prompt 组装(音频数组直传模型,不再写 WAV)
         try:
             t_asm_start = time.monotonic()
             prompt, tail_src, prompt_hash = build_prompt()
-            if precomputed_result is None:
-                save_wav(samples, tmp_wav)
             t_asm_end = time.monotonic()
             asm_ms = (t_asm_end - t_asm_start) * 1000
 
@@ -1089,7 +1087,7 @@ def main():
             if precomputed_result is not None:
                 result = precomputed_result
             else:
-                result = do_transcribe(tmp_wav,
+                result = do_transcribe(samples,
                                        language=args.language,
                                        model=resolved_model,
                                        backend=resolved_backend)
@@ -1368,10 +1366,10 @@ def main():
                 if need_asr:
                     all_sm = np.concatenate(collected)
                     sm_audio = all_sm.copy()
-                    tmp_sm = os.path.join(tempfile.gettempdir(), f"whicc_soft_{os.getpid()}.wav")
                     try:
-                        save_wav(all_sm, tmp_sm)
-                        result_sm = do_transcribe(tmp_sm,
+                        # 数组直传 — 探针每 0.6s 跑一次,之前每次都
+                        # save_wav 落盘再让模型读回,现在零磁盘往返。
+                        result_sm = do_transcribe(all_sm,
                                                   language=args.language,
                                                   model=resolved_model,
                                                   backend=resolved_backend)
@@ -1395,11 +1393,6 @@ def main():
                         sm_text = None
                         sm_result = None
                         sm_audio = np.array([], dtype=np.float32)
-                    finally:
-                        try:
-                            os.unlink(tmp_sm)
-                        except OSError:
-                            pass
 
             # ---- 标点感知断句: ASR 看到完整句立刻在标点位置切 ----
             # 与 soft_max 区别: 不要求 chunk_sec >= SOFT_MAX_SEC。
