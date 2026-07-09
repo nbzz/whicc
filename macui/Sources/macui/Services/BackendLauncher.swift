@@ -521,12 +521,14 @@ final class BackendLauncher {
         var process: Process
         var restarts: Int
         var lastRestartAt: Date?
-        /// "等模型"提示(exit 3)只发一次,避免每次重试都刷一条通知。
-        var waitingModelNoticeShown = false
+        /// "等配置/等模型"提示(exit 3)只发一次,避免每次重试都刷通知。
+        var waitingNoticeShown = false
     }
 
-    /// whicc.py 的"ASR 模型未下载/残缺"退出码 — 配置性等待,不是故障。
-    private static let _exitWaitingModel: Int32 = 3
+    /// 后端"等待配置/资源"的约定退出码 — 配置性等待,不是故障:
+    /// - whicc.py: ASR 模型未下载/残缺
+    /// - translate_stream.py: 翻译服务 URL 未配置 / 翻译未启用
+    private static let _exitWaitingConfig: Int32 = 3
 
     private static var _monitored: [MonitoredProc] = []
     private static let _monitorLock = NSLock()
@@ -557,32 +559,32 @@ final class BackendLauncher {
             let m = _monitored[i]
             guard !m.process.isRunning else { continue }
             let code = m.process.terminationStatus
-            let waitingModel = (code == _exitWaitingModel)
+            let waiting = (code == _exitWaitingConfig)
             // 退避:快速重启次数耗尽后,每 _slowRetryInterval 才试一次。
-            // 例外:"等模型"退出(code 3)时,models 目录一出现新的
-            // .complete 标记(下载刚完成)就立即重启 — 用户下载完模型
-            // 秒恢复,不用干等慢速重试窗口。
+            // 例外:"等配置"退出(code 3)时,对应资源一就绪就立即重启 —
+            // whicc.py 等 models 目录出现新 .complete(模型下载完成),
+            // translate_stream.py 等 lang_config.json 更新(用户填了
+            // 服务地址,debounce 自动保存) — 秒恢复,不等慢速窗口。
             if m.restarts >= _fastRestarts,
                let last = m.lastRestartAt,
                now.timeIntervalSince(last) < _slowRetryInterval {
-                if !(waitingModel && modelCompletedSince(last)) {
+                if !(waiting && waitedResourceReady(script: m.backend.script, since: last)) {
                     continue
                 }
-                logAndStderr("[monitor] model download detected, restarting \(m.backend.script) immediately")
+                logAndStderr("[monitor] waited resource ready, restarting \(m.backend.script) immediately")
             }
             _monitored[i].restarts += 1
             _monitored[i].lastRestartAt = now
             let n = _monitored[i].restarts
             logAndStderr("[monitor] \(m.backend.script) exited (code \(code)), "
                          + "restart #\(n)\(n > _fastRestarts ? " (slow retry)" : "")")
-            if waitingModel {
+            if waiting {
                 // 配置性等待,不是故障 — 给指引而不是吓人的"异常退出";
                 // 只发一次,静默重试。
-                if !m.waitingModelNoticeShown {
-                    _monitored[i].waitingModelNoticeShown = true
-                    appendBackendNotice(
-                        zh: "⏳ 语音识别模型未就绪 — 请到 设置 → 模型 页下载;完成后自动开始识别",
-                        en: "⏳ ASR model not ready — download it in Settings → Models; recognition starts automatically once done")
+                if !m.waitingNoticeShown {
+                    _monitored[i].waitingNoticeShown = true
+                    let (zh, en) = waitingNotice(script: m.backend.script)
+                    appendBackendNotice(zh: zh, en: en)
                 }
             } else {
                 appendBackendNotice(
@@ -597,22 +599,49 @@ final class BackendLauncher {
         }
     }
 
-    /// models 目录里是否有比 `since` 更新的 `.complete` 标记
-    /// (= 一次模型下载刚刚完成)。监控用它把"等模型"的慢速重试
-    /// 提前成即时恢复。
-    private static func modelCompletedSince(_ since: Date) -> Bool {
-        let modelsDir = NSHomeDirectory() + "/Library/Application Support/whicc/models"
+    /// "等配置"退出(code 3)的字幕区指引文案,按脚本区分。
+    private static func waitingNotice(script: String) -> (zh: String, en: String) {
+        switch script {
+        case "whicc.py":
+            return ("⏳ 语音识别模型未就绪 — 请到 设置 → 模型 页下载;完成后自动开始识别",
+                    "⏳ ASR model not ready — download it in Settings → Models; recognition starts automatically once done")
+        case "translate_stream.py":
+            return ("💬 翻译服务未配置 — 到 设置 → 服务配置 填写地址即可启用;不配置也能看原文字幕",
+                    "💬 Translation not configured — set the service address in Settings → Server to enable; source-only captions work without it")
+        default:
+            return ("⏳ 后端 \(script) 等待配置中,就绪后自动启动",
+                    "⏳ Backend \(script) waiting for configuration; starts automatically once ready")
+        }
+    }
+
+    /// code 3 等待的资源是否已就绪(比 `since` 更新):
+    /// - whicc.py: models 目录出现新 .complete 标记(模型下载完成)
+    /// - translate_stream.py: lang_config.json 被更新(用户保存了配置)
+    private static func waitedResourceReady(script: String, since: Date) -> Bool {
         let fm = FileManager.default
-        guard let entries = try? fm.contentsOfDirectory(atPath: modelsDir) else { return false }
-        for name in entries where name.hasSuffix(".complete") {
-            let path = modelsDir + "/" + name
-            if let attrs = try? fm.attributesOfItem(atPath: path),
+        switch script {
+        case "whicc.py":
+            let modelsDir = NSHomeDirectory() + "/Library/Application Support/whicc/models"
+            guard let entries = try? fm.contentsOfDirectory(atPath: modelsDir) else { return false }
+            for name in entries where name.hasSuffix(".complete") {
+                if let attrs = try? fm.attributesOfItem(atPath: modelsDir + "/" + name),
+                   let mtime = attrs[.modificationDate] as? Date,
+                   mtime > since {
+                    return true
+                }
+            }
+            return false
+        case "translate_stream.py":
+            let cfgPath = AppPaths.runDir + "/lang_config.json"
+            if let attrs = try? fm.attributesOfItem(atPath: cfgPath),
                let mtime = attrs[.modificationDate] as? Date,
                mtime > since {
                 return true
             }
+            return false
+        default:
+            return false
         }
-        return false
     }
 
     /// 往 translation_events.jsonl 追加一条通知(translation_final 事件),

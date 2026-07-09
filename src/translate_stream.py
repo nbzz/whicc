@@ -768,7 +768,7 @@ def main():
         print(f"[translate] translation_enabled=False,翻译未启用,退出", flush=True)
         print(f"[translate] 请在 macui 设置 → 服务配置 → 启用远端翻译,"
               f"并配置翻译节点地址", flush=True)
-        sys.exit(1)
+        sys.exit(3)  # 3 = 等配置(非故障),BackendLauncher 监控按 code 区分提示
     if args.force_enable and not translation_enabled:
         print(f"[translate] --force-enable 覆盖 lang_config.json 的 enabled=False,"
               f"继续启动 (打包模式 .app 行为)", flush=True)
@@ -828,7 +828,10 @@ def main():
     if not candidates:
         print(f"[translate] 未配置任何翻译节点 URL (translation_url / "
               f"translation_fallback_url / --vllm-url / --vllm-fallback-url),退出", flush=True)
-        sys.exit(1)
+        # exit 3 = 等配置,不是故障。用户在设置页填好地址(lang_config
+        # 保存)后,BackendLauncher 监控检测到配置文件更新会立即重启
+        # 本进程,新 URL 生效 — 用户不用手动"保存并重启"。
+        sys.exit(3)
 
     # per-URL model_map: fallback URL 用 fb_model_id (可能跟主 URL 不同)
     # 主 URL 用 model_id (fallback map 里没写)。backend 内部 _resolve_ipv4
