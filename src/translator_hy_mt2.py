@@ -619,6 +619,7 @@ class VLLMBackend:
                 "调用方应从 lang_config.json:translation_url / --vllm-url 显式传入"
             )
         self._connect_timeout = connect_timeout
+        self._client = None  # 懒建的 httpx.Client(_http_client)
         # per-URL API key — 非空时所有请求(探活 + 生成)带
         # `Authorization: Bearer` 头。key 跟 candidates 同格式化。
         self._api_key_per_url: dict[str, str] = {
@@ -665,6 +666,29 @@ class VLLMBackend:
         if key:
             h["Authorization"] = f"Bearer {key}"
         return h
+
+    def _http_client(self):
+        """共享 httpx.Client(keep-alive 连接复用)。
+
+        之前用 urllib.request:每个请求都重建 TCP+TLS — 经系统代理
+        CONNECT + Cloudflare 边缘的完整握手链,实测每请求白付数百 ms
+        到 1s+,是"翻译非常慢"的大头之一。同站点复用连接后握手只付
+        一次。系统代理经 getproxies() 显式传入:httpx 不读 macOS 的
+        scutil 代理配置(urllib 读),不传的话开系统代理的机器会退回
+        直连,fake-ip DNS 环境下直接不可达。
+        """
+        if self._client is None:
+            import httpx
+            import urllib.request
+            proxies = urllib.request.getproxies()
+            proxy = proxies.get("https") or proxies.get("http")
+            self._client = httpx.Client(
+                proxy=proxy,
+                timeout=httpx.Timeout(connect=5.0, read=90.0,
+                                      write=15.0, pool=10.0),
+                follow_redirects=True,
+            )
+        return self._client
 
     # ── 端点适配(chat/completions ↔ responses) ─────────────────────────
 
@@ -827,35 +851,35 @@ class VLLMBackend:
         - 401 / 403       → 鉴权失败,明确报错提示填 API key
         - 连接错误/超时   → 不可达
         """
-        import urllib.request
-        import urllib.error
+        import httpx
         headers = {"User-Agent": self._USER_AGENT}
         key = self._api_key_per_url.get(base_url, "")
         if key:
             headers["Authorization"] = f"Bearer {key}"
         try:
-            req = urllib.request.Request(f"{base_url}/v1/models",
-                                         headers=headers, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = json.loads(resp.read())
-                data = body.get("data", [])
-                if data:
-                    print(f"[translator] 翻译服务已连接 ({base_url}, "
-                          f"{len(data)} 模型可用)。", flush=True)
-                else:
-                    print(f"[translator] 已连接 ({base_url}),/v1/models 列表"
-                          f"为空 — 继续(模型名以用户配置为准)。", flush=True)
-        except urllib.error.HTTPError as e:
-            if e.code in (404, 405):
+            resp = self._http_client().get(f"{base_url}/v1/models",
+                                           headers=headers, timeout=timeout)
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data", [])
+            if data:
+                print(f"[translator] 翻译服务已连接 ({base_url}, "
+                      f"{len(data)} 模型可用)。", flush=True)
+            else:
+                print(f"[translator] 已连接 ({base_url}),/v1/models 列表"
+                      f"为空 — 继续(模型名以用户配置为准)。", flush=True)
+        except httpx.HTTPStatusError as e:
+            code = e.response.status_code
+            if code in (404, 405):
                 print(f"[translator] 已连接 ({base_url}),该站点不提供 "
                       f"/v1/models — 继续(请手动配置模型名;auto 端点会"
                       f"自适应 /v1/responses)。", flush=True)
                 return
-            if e.code in (401, 403):
+            if code in (401, 403):
                 raise RuntimeError(
-                    f"鉴权失败 ({base_url}): HTTP {e.code} — "
+                    f"鉴权失败 ({base_url}): HTTP {code} — "
                     f"请在设置里填写正确的 API key") from e
-            raise RuntimeError(f"健康检查失败 ({base_url}): HTTP {e.code}") from e
+            raise RuntimeError(f"健康检查失败 ({base_url}): HTTP {code}") from e
         except Exception as e:
             raise RuntimeError(f"健康检查失败 ({base_url}): {e}") from e
 
@@ -867,8 +891,7 @@ class VLLMBackend:
         重启时 session 不会翻车);auto 端点模式下 404/405 会先切
         另一个端点重试(站点只实现 chat/responses 其一)。
         """
-        import urllib.request
-        import urllib.error
+        import httpx
         # 3 次机会: 端点自适应一次 + URL 重选一次 + 最终尝试
         for attempt in range(3):
             try:
@@ -878,32 +901,31 @@ class VLLMBackend:
                 path, body = self._build_request(
                     messages, temperature, top_p, top_k,
                     repetition_penalty, max_new_tokens, stream=False)
-                payload = json.dumps(body).encode()
-                req = urllib.request.Request(
+                resp = self._http_client().post(
                     f"{self.base_url}{path}",
-                    data=payload,
+                    content=json.dumps(body).encode(),
                     headers=self._headers(),
-                    method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=60) as resp:
-                    result = json.loads(resp.read())
+                resp.raise_for_status()
+                result = resp.json()
                 # 检查服务端返回的 error 字段(OOM / prompt 过长)
                 if "error" in result and result["error"]:
                     raise RuntimeError(f"翻译服务错误: {result['error']}")
                 if self._active_endpoint == "responses":
                     return self._parse_responses_output(result).strip()
                 return result["choices"][0]["message"]["content"].strip()
-            except urllib.error.HTTPError as e:
-                if attempt < 2 and self._flip_endpoint_if_auto(e.code):
+            except httpx.HTTPStatusError as e:
+                code = e.response.status_code
+                if attempt < 2 and self._flip_endpoint_if_auto(code):
                     continue  # 换端点立刻重试,不换 URL
                 if attempt == 2:
                     raise
-                print(f"[translator] {self.base_url} 失败 (HTTP {e.code}),"
+                print(f"[translator] {self.base_url} 失败 (HTTP {code}),"
                       f"重选候选...", flush=True)
                 self.base_url = self._pick_healthy()
                 self._active_model_id = self._model_per_url.get(
                     self.base_url, self.model_id)
-            except (urllib.error.URLError, RuntimeError, ConnectionError) as e:
+            except (httpx.HTTPError, RuntimeError, ConnectionError) as e:
                 if attempt == 2:
                     raise
                 print(f"[translator] {self.base_url} 失败 ({e}),重选候选...",
@@ -927,71 +949,69 @@ class VLLMBackend:
         that only want the running total can ignore the first
         argument with `lambda piece, full: handler(full)`.
         """
-        import urllib.request
-        import urllib.error
-        # auto 端点模式: 404/405 时切另一个端点重试一次
-        resp = None
+        # auto 端点模式: 404/405 时切另一个端点重试一次。
+        # httpx.stream 复用 _http_client 的 keep-alive 连接 — SSE 首 token
+        # 延迟里省掉整段代理 CONNECT + TLS 握手。
         for attempt in range(2):
             path, body = self._build_request(
                 messages, temperature, top_p, top_k,
                 repetition_penalty, max_new_tokens, stream=True)
-            payload = json.dumps(body).encode()
-            req = urllib.request.Request(
-                f"{self.base_url}{path}",
-                data=payload,
-                headers=self._headers(sse=True),
-                method="POST",
-            )
-            try:
-                resp = urllib.request.urlopen(req, timeout=120)
-            except urllib.error.HTTPError as e:
-                if attempt == 0 and self._flip_endpoint_if_auto(e.code):
-                    continue
-                raise
-            break
-        if resp is None:
-            raise RuntimeError("generate_streaming: 无可用端点")  # 防御
+            with self._http_client().stream(
+                    "POST",
+                    f"{self.base_url}{path}",
+                    content=json.dumps(body).encode(),
+                    headers=self._headers(sse=True)) as resp:
+                if resp.status_code >= 400:
+                    if attempt == 0 and \
+                            self._flip_endpoint_if_auto(resp.status_code):
+                        continue
+                    raise RuntimeError(
+                        f"generate_streaming: HTTP {resp.status_code}")
+                return self._consume_sse(resp, on_token)
+        raise RuntimeError("generate_streaming: 无可用端点")  # 防御
+
+    def _consume_sse(self, resp, on_token) -> str:
+        """消费 SSE 流,逐 token 回调。chat 与 responses 两种事件格式。"""
         full = ""
         is_responses = self._active_endpoint == "responses"
-        with resp:
-            for raw_line in resp:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line or not line.startswith("data: "):
-                    continue  # 跳过空行和 `event:` 行(Responses SSE 会发)
-                data = line[len("data: "):]
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                    # vLLM/LM Studio 在 OOM / prompt 过长 / 模型下架时会
-                    # 返回 {"error": {...}} (没有 choices 字段)。原来代码
-                    # 被 except KeyError 吞掉,变成"流继续,UI 收到空字符串"
-                    # 然后被 _is_bad_output("") 当合法翻译返回。
-                    if "error" in chunk and chunk["error"]:
-                        raise RuntimeError(f"翻译服务错误: {chunk['error']}")
-                    if is_responses:
-                        # Responses API 的 SSE 是带类型事件流:
-                        # response.output_text.delta 的 delta 字段是增量;
-                        # response.completed = 正常收尾;
-                        # response.error / error = 服务端异常。
-                        ctype = chunk.get("type", "")
-                        if ctype == "response.output_text.delta":
-                            piece = chunk.get("delta", "")
-                            if piece:
-                                full += piece
-                                on_token(piece, full)
-                        elif ctype == "response.completed":
-                            break
-                        elif ctype in ("response.error", "error", "response.failed"):
-                            raise RuntimeError(f"Responses API 错误: {chunk}")
-                        continue
-                    delta = chunk["choices"][0].get("delta", {})
-                    piece = delta.get("content", "")
-                    if piece:
-                        full += piece
-                        on_token(piece, full)  # (piece, cumulative)
-                except (json.JSONDecodeError, KeyError, IndexError):
+        for raw_line in resp.iter_lines():
+            line = raw_line.strip()
+            if not line or not line.startswith("data: "):
+                continue  # 跳过空行和 `event:` 行(Responses SSE 会发)
+            data = line[len("data: "):]
+            if data == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data)
+                # vLLM/LM Studio 在 OOM / prompt 过长 / 模型下架时会
+                # 返回 {"error": {...}} (没有 choices 字段)。原来代码
+                # 被 except KeyError 吞掉,变成"流继续,UI 收到空字符串"
+                # 然后被 _is_bad_output("") 当合法翻译返回。
+                if "error" in chunk and chunk["error"]:
+                    raise RuntimeError(f"翻译服务错误: {chunk['error']}")
+                if is_responses:
+                    # Responses API 的 SSE 是带类型事件流:
+                    # response.output_text.delta 的 delta 字段是增量;
+                    # response.completed = 正常收尾;
+                    # response.error / error = 服务端异常。
+                    ctype = chunk.get("type", "")
+                    if ctype == "response.output_text.delta":
+                        piece = chunk.get("delta", "")
+                        if piece:
+                            full += piece
+                            on_token(piece, full)
+                    elif ctype == "response.completed":
+                        break
+                    elif ctype in ("response.error", "error", "response.failed"):
+                        raise RuntimeError(f"Responses API 错误: {chunk}")
                     continue
+                delta = chunk["choices"][0].get("delta", {})
+                piece = delta.get("content", "")
+                if piece:
+                    full += piece
+                    on_token(piece, full)  # (piece, cumulative)
+            except (json.JSONDecodeError, KeyError, IndexError):
+                continue
         return full.strip()
 
 
