@@ -190,11 +190,11 @@
 
 /* ModelPane header summary — split 4 段 Text 拼接的中间部分。
  * 数字前后两段本地化片段独立查表,数字走 verbatim。
- * 整句原文: "<N> 个语音识别 ASR 模型，共 <size>，卸载后自动释放磁盘空间"
- * 英文:    "<N> ASR models, total <size>, uninstall to free disk space"
+ * 整句原文: "<N> 个语音识别 ASR 模型，共 <size>，完全卸载需手动删除 ~/Library/Application Support/whicc/models"
+ * 英文:    "<N> ASR models, total <size>, manually delete ~/Library/Application Support/whicc/models to fully uninstall"
  */
 " 个语音识别 ASR 模型，共 " = " ASR models, total ";
-"，卸载后自动释放磁盘空间" = ", uninstall to free disk space";
+"，完全卸载需手动删除 ~/Library/Application Support/whicc/models" = ", manually delete ~/Library/Application Support/whicc/models to fully uninstall";
 
 /* ===== EventPane.swift ===== */
 "事件识别" = "Event recognition";
