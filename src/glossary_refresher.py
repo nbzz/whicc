@@ -670,4 +670,20 @@ def main():
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="whicc glossary refresher")
+    parser.add_argument(
+        "--glossary",
+        default=GLOSSARY_PATH,
+        help="glossary.json 可写路径（打包模式应指向 Application Support）",
+    )
+    args = parser.parse_args()
+
+    # 与 macui / translate_stream 共用同一文件；旁路控制文件落在同目录
+    GLOSSARY_PATH = os.path.abspath(args.glossary)
+    _gdir = os.path.dirname(GLOSSARY_PATH) or "."
+    META_PATH = os.path.join(_gdir, "_glossary_meta.json")
+    CONTROL_PATH = os.path.join(_gdir, "_glossary_control.json")
+    CHANGES_PATH = os.path.join(_gdir, "_glossary_changes.jsonl")
     main()

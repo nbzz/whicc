@@ -11,25 +11,24 @@ struct GlossaryPane: View {
         }
     }
 
-    /// 无外壳内容 — HermesPane 把它跟事件流纵向堆在同一 ScrollView,
-    /// 不嵌套两层 ScrollView。必须返回带 @State / .sheet 的编辑器本体,
-    /// 不能只抽 UI 而把 sheet 留在 body 上,否则「添加术语」点了无弹窗。
+    /// 无外壳内容 — HermesPane 嵌入用（避免双 ScrollView）。
     var content: some View {
         GlossaryEditor(state: state)
     }
 }
 
-/// 词库编辑主体。@State 与 sheet 必须挂在实际进入视图树的 View 上:
-/// HermesPane 嵌入的是 GlossaryPane.content,若 State/sheet 只挂在
-/// GlossaryPane.body,按钮会改 flag 却永远弹不出表单。
+/// 词库编辑主体。
+///
+/// 不使用 `.sheet`：在 macOS 的 `NavigationSplitView` 详情列 + ScrollView
+/// 里 sheet 经常点了无弹窗。改为页内展开表单，保证「添加术语」可见可点。
 private struct GlossaryEditor: View {
     @ObservedObject var state: GlossaryState
 
     @State private var searchText = ""
-    @State private var showAddSheet = false
+    @State private var isAdding = false
     @State private var editingEntry: GlossaryEntry?
-    @State private var editingZh = ""
-    @State private var editingEn = ""
+    @State private var draftZh = ""
+    @State private var draftEn = ""
     @State private var showClearConfirm = false
 
     private var filteredEntries: [GlossaryEntry] {
@@ -40,28 +39,30 @@ private struct GlossaryEditor: View {
         }
     }
 
+    private var isEditing: Bool { editingEntry != nil }
+
+    private var canSaveDraft: Bool {
+        !draftZh.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !draftEn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             header
             searchBar
+            if isAdding || isEditing {
+                draftForm
+            }
+            if let err = state.lastWriteError, !err.isEmpty {
+                Text(err)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             entriesCard
-            addButton
-        }
-        .sheet(isPresented: $showAddSheet) {
-            entrySheet(
-                title: "添加术语", zh: "", en: "",
-                onSave: { zh, en in state.addEntry(zh: zh, en: en) },
-                onDismiss: { showAddSheet = false }
-            )
-        }
-        .sheet(item: $editingEntry) { entry in
-            entrySheet(
-                title: "编辑术语", zh: entry.zh, en: entry.en,
-                onSave: { zh, en in
-                    state.updateEntry(oldZh: entry.zh, newZh: zh, newEn: en)
-                },
-                onDismiss: { editingEntry = nil }
-            )
+            if !isAdding && !isEditing {
+                addButton
+            }
         }
     }
 
@@ -72,7 +73,6 @@ private struct GlossaryEditor: View {
             title: "词库",
             trailing: {
                 HStack(spacing: 10) {
-                    // 拆成 "数字 + 条" 两段 Text 拼接,让 "条" 后缀走本地化表。
                     (Text("\(state.entries.count)") + Text(" 条"))
                         .font(.caption).foregroundColor(.secondary)
                     if !state.entries.isEmpty {
@@ -88,8 +88,6 @@ private struct GlossaryEditor: View {
                             Button("取消", role: .cancel) {}
                             Button("清空", role: .destructive) { state.clearGlossary() }
                         } message: {
-                            // "删除全部 X 条术语" 拆成 "删除全部 " + 数字 + " 条术语",
-                            // 让数字前后两段本地化片段都走 .strings 表。
                             (Text("删除全部 ") + Text("\(state.entries.count)") + Text(" 条术语"))
                         }
                     }
@@ -128,10 +126,34 @@ private struct GlossaryEditor: View {
         )
     }
 
+    private var draftForm: some View {
+        SettingsCard {
+            Text(isEditing ? "编辑术语" : "添加术语")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            HStack {
+                Text("中文").frame(width: 40, alignment: .trailing)
+                TextField("术语", text: $draftZh)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                Text("英文").frame(width: 40, alignment: .trailing)
+                TextField("translation", text: $draftEn)
+                    .textFieldStyle(.roundedBorder)
+            }
+            HStack {
+                Button("取消") { cancelDraft() }
+                Spacer()
+                Button("保存") { saveDraft() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canSaveDraft)
+            }
+        }
+    }
+
     private var entriesCard: some View {
         SettingsCard(padding: 0) {
             if filteredEntries.isEmpty {
-                // 用显式 LocalizedStringKey,避免 ternary 推断成 String verbatim
                 let key: LocalizedStringKey = state.entries.isEmpty
                     ? "词库为空，点右下角添加术语。"
                     : "没有匹配的术语"
@@ -156,10 +178,11 @@ private struct GlossaryEditor: View {
         HStack {
             Spacer()
             Button {
-                // 调用清空编辑缓存：避免上次编辑残留进「添加」表单
-                editingZh = ""
-                editingEn = ""
-                showAddSheet = true
+                // 调用取消编辑态：开始新增时清空草稿，展开页内表单（不用 sheet）
+                editingEntry = nil
+                draftZh = ""
+                draftEn = ""
+                isAdding = true
             } label: {
                 Label("添加术语", systemImage: "plus.circle")
             }
@@ -195,8 +218,9 @@ private struct GlossaryEditor: View {
                         .foregroundColor(.secondary)
                 }
                 Button {
-                    editingZh = entry.zh
-                    editingEn = entry.en
+                    isAdding = false
+                    draftZh = entry.zh
+                    draftEn = entry.en
                     editingEntry = entry
                 } label: {
                     Image(systemName: "pencil")
@@ -224,44 +248,26 @@ private struct GlossaryEditor: View {
         }
     }
 
-    private func entrySheet(title: String, zh: String, en: String,
-                            onSave: @escaping (String, String) -> Void,
-                            onDismiss: @escaping () -> Void) -> some View {
-        VStack(spacing: 12) {
-            Text(title).font(.headline)
-            HStack {
-                Text("中文").frame(width: 40, alignment: .trailing)
-                TextField("术语", text: $editingZh)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack {
-                Text("英文").frame(width: 40, alignment: .trailing)
-                TextField("translation", text: $editingEn)
-                    .textFieldStyle(.roundedBorder)
-            }
-            HStack {
-                Button("取消") {
-                    editingZh = ""
-                    editingEn = ""
-                    onDismiss()
-                }
-                Spacer()
-                Button("保存") {
-                    onSave(editingZh, editingEn)
-                    editingZh = ""
-                    editingEn = ""
-                    onDismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(editingZh.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                          || editingEn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
+    private func cancelDraft() {
+        isAdding = false
+        editingEntry = nil
+        draftZh = ""
+        draftEn = ""
+    }
+
+    private func saveDraft() {
+        let zh = draftZh.trimmingCharacters(in: .whitespacesAndNewlines)
+        let en = draftEn.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !zh.isEmpty, !en.isEmpty else { return }
+        if let editing = editingEntry {
+            // 调用更新：保存编辑后的中英对照
+            state.updateEntry(oldZh: editing.zh, newZh: zh, newEn: en)
+        } else {
+            // 调用新增：写入 glossary.json（可写目录）
+            state.addEntry(zh: zh, en: en)
         }
-        .padding(20)
-        .frame(width: 340)
-        .onAppear {
-            editingZh = zh
-            editingEn = en
+        if state.lastWriteError == nil {
+            cancelDraft()
         }
     }
 }
