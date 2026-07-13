@@ -160,6 +160,10 @@ jobs:
                       keys.append(m.group(1))
               return keys
 
+          format_key_re = re.compile(
+              r'%(?:\d+\$)?[-+#0 ]*(?:\d+|\*)?(?:\.(?:\d+|\*))?(?:hh|h|ll|l|L|z|j|t)?[@diuoxXfFeEgGaAcCsSp]'
+          )
+
           errors = []
           for sf in strings_files:
               keys = parse_keys(sf)
@@ -175,6 +179,8 @@ jobs:
               }
               for k in keys:
                   if k in non_source:
+                      continue
+                  if format_key_re.search(k):
                       continue
                   if not any(k in sf.read_text() for sf in src_files):
                       errors.append(f"{sf.name}: orphan key {k!r} (not in source)")
