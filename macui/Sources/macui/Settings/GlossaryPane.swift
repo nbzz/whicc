@@ -5,6 +5,26 @@ import SwiftUI
 struct GlossaryPane: View {
     @ObservedObject var state: GlossaryState
 
+    var body: some View {
+        SettingsDetailContainer {
+            GlossaryEditor(state: state)
+        }
+    }
+
+    /// 无外壳内容 — HermesPane 把它跟事件流纵向堆在同一 ScrollView,
+    /// 不嵌套两层 ScrollView。必须返回带 @State / .sheet 的编辑器本体,
+    /// 不能只抽 UI 而把 sheet 留在 body 上,否则「添加术语」点了无弹窗。
+    var content: some View {
+        GlossaryEditor(state: state)
+    }
+}
+
+/// 词库编辑主体。@State 与 sheet 必须挂在实际进入视图树的 View 上:
+/// HermesPane 嵌入的是 GlossaryPane.content,若 State/sheet 只挂在
+/// GlossaryPane.body,按钮会改 flag 却永远弹不出表单。
+private struct GlossaryEditor: View {
+    @ObservedObject var state: GlossaryState
+
     @State private var searchText = ""
     @State private var showAddSheet = false
     @State private var editingEntry: GlossaryEntry?
@@ -21,30 +41,32 @@ struct GlossaryPane: View {
     }
 
     var body: some View {
-        SettingsDetailContainer { content }
-            .sheet(isPresented: $showAddSheet) {
-                entrySheet(
-                    title: "添加术语", zh: "", en: "",
-                    onSave: { zh, en in state.addEntry(zh: zh, en: en) },
-                    onDismiss: { showAddSheet = false }
-                )
-            }
-            .sheet(item: $editingEntry) { entry in
-                entrySheet(
-                    title: "编辑术语", zh: entry.zh, en: entry.en,
-                    onSave: { zh, en in
-                        state.updateEntry(oldZh: entry.zh, newZh: zh, newEn: en)
-                    },
-                    onDismiss: { editingEntry = nil }
-                )
-            }
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            searchBar
+            entriesCard
+            addButton
+        }
+        .sheet(isPresented: $showAddSheet) {
+            entrySheet(
+                title: "添加术语", zh: "", en: "",
+                onSave: { zh, en in state.addEntry(zh: zh, en: en) },
+                onDismiss: { showAddSheet = false }
+            )
+        }
+        .sheet(item: $editingEntry) { entry in
+            entrySheet(
+                title: "编辑术语", zh: entry.zh, en: entry.en,
+                onSave: { zh, en in
+                    state.updateEntry(oldZh: entry.zh, newZh: zh, newEn: en)
+                },
+                onDismiss: { editingEntry = nil }
+            )
+        }
     }
 
-    /// 无外壳内容 — HermesPane 把它跟事件流纵向堆在同一 ScrollView,
-    /// 不嵌套两层 ScrollView。body 保留 SettingsDetailContainer 包装
-    /// 给单独使用 GlossaryPane 的场景。
     @ViewBuilder
-    var content: some View {
+    private var header: some View {
         SettingsSectionHeader(
             icon: "character.book.closed",
             title: "词库",
@@ -67,7 +89,7 @@ struct GlossaryPane: View {
                             Button("清空", role: .destructive) { state.clearGlossary() }
                         } message: {
                             // "删除全部 X 条术语" 拆成 "删除全部 " + 数字 + " 条术语",
-                            // 让数字前后两段本地化片段都走 .strings 表 (key 是 "删除全部 " / " 条术语")。
+                            // 让数字前后两段本地化片段都走 .strings 表。
                             (Text("删除全部 ") + Text("\(state.entries.count)") + Text(" 条术语"))
                         }
                     }
@@ -82,8 +104,9 @@ struct GlossaryPane: View {
                 }
             }
         )
+    }
 
-        // Search
+    private var searchBar: some View {
         HStack {
             Image(systemName: "magnifyingglass").foregroundColor(.secondary)
             TextField("搜索术语…", text: $searchText).textFieldStyle(.plain)
@@ -103,8 +126,9 @@ struct GlossaryPane: View {
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .stroke(Color.primary.opacity(0.10), lineWidth: 0.5)
         )
+    }
 
-        // List as a card
+    private var entriesCard: some View {
         SettingsCard(padding: 0) {
             if filteredEntries.isEmpty {
                 // 用显式 LocalizedStringKey,避免 ternary 推断成 String verbatim
@@ -126,11 +150,15 @@ struct GlossaryPane: View {
                 }
             }
         }
+    }
 
-        // Add
+    private var addButton: some View {
         HStack {
             Spacer()
             Button {
+                // 调用清空编辑缓存：避免上次编辑残留进「添加」表单
+                editingZh = ""
+                editingEn = ""
                 showAddSheet = true
             } label: {
                 Label("添加术语", systemImage: "plus.circle")
@@ -138,7 +166,8 @@ struct GlossaryPane: View {
             .buttonStyle(.bordered)
         }
     }
-@ViewBuilder
+
+    @ViewBuilder
     private func row(_ entry: GlossaryEntry) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
@@ -224,6 +253,8 @@ struct GlossaryPane: View {
                     onDismiss()
                 }
                 .keyboardShortcut(.defaultAction)
+                .disabled(editingZh.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                          || editingEn.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
