@@ -118,7 +118,8 @@ final class BackendLauncher {
                 args: [
                     "--events", eventsPath,
                     "--out-dir", runDir,
-                    "--glossary", "\(src)/glossary.json",
+                    // 调用可写词库路径：打包后不能写 Resources/src/glossary.json
+                    "--glossary", AppPaths.glossaryPath,
                     // 翻译 URL 全部从 lang_config.json 读 (用户自己在 macui 设置里配)。
                     "--vllm-url", "",
                     "--vllm-fallback-url", "",
@@ -135,7 +136,8 @@ final class BackendLauncher {
             ),
             BackendProc(
                 script: "glossary_refresher.py",
-                args: [],
+                // 调用同一可写 glossary：与 macui / translate_stream 共用
+                args: ["--glossary", AppPaths.glossaryPath],
                 logName: "glossary-refresher.log"
             ),
             BackendProc(

@@ -14,7 +14,7 @@ struct OverlayConfig {
     static let defaults = Self(
         eventsPath: "",
         transEventsPath: nil,
-        glossaryDir: AppPaths.srcDir,
+        glossaryDir: AppPaths.glossaryDir,
         xPct: 15,
         yPct: 1,
         wPct: 70,
@@ -204,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // init-* pings。如果 positional 是 events.jsonl,
                 // banner 永远不工作。
                 args = [args[0], transFile, "--trans", eventsFile,
-                        "--glossary", AppPaths.srcDir,
+                        "--glossary", AppPaths.glossaryDir,
                         "--x", "15", "--y", "1", "--w", "70", "--h", "13"]
             }
             let config = try parseConfig(from: args)

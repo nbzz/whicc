@@ -137,35 +137,57 @@ GLOSSARY_FLUSH_INTERVAL = 50  # 每 50 次命中刷盘一次
 
 
 def _track_hits(glossary_path: str | None, glossary: dict, hits: dict):
-    """在内存中累计命中次数，定期写回 glossary.json。"""
+    """在内存中累计命中次数，定期写回 glossary.json。
+
+    只往 buffer 记增量，不直接改传进来的 glossary（那是 _load_glossary
+    的缓存，只含 en2zh/zh2en，没有 _meta——直接 dump 会把磁盘上的
+    _meta 整个抹掉，manual 来源信息丢失后术语会被 refresher 当
+    unknown 过期删除）。
+    """
     global _glossary_flush_counter
-    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
-    meta = glossary.setdefault("_meta", {})
     for term in hits:
-        if term not in meta:
-            meta[term] = {"source": "unknown", "added": now_str, "last_used": now_str, "hits": 1}
-        else:
-            meta[term]["last_used"] = now_str
-            meta[term]["hits"] = meta[term].get("hits", 0) + 1
         _glossary_hits_buffer[term] = _glossary_hits_buffer.get(term, 0) + 1
 
     _glossary_flush_counter += len(hits)
     if _glossary_flush_counter >= GLOSSARY_FLUSH_INTERVAL:
-        _flush_glossary_meta(glossary_path, glossary)
+        _flush_glossary_meta(glossary_path)
         _glossary_flush_counter = 0
 
 
-def _flush_glossary_meta(glossary_path: str | None, glossary: dict):
-    """将内存中的命中计数刷到 glossary.json。"""
-    if not glossary_path:
+def _flush_glossary_meta(glossary_path: str | None):
+    """把 buffer 里的命中计数合并进磁盘最新词库后原子写回。
+
+    读盘→合并→写盘，以磁盘为准：macui 手动增删、refresher 新增都
+    不会被这次刷盘覆盖，词条与 _meta 全量保留，只更新命中字段。
+    """
+    if not glossary_path or not _glossary_hits_buffer:
         return
     try:
         import json as _json
+        try:
+            with open(glossary_path, "r", encoding="utf-8") as f:
+                fresh = _json.load(f)
+        except (FileNotFoundError, _json.JSONDecodeError):
+            fresh = {}
+        if not isinstance(fresh, dict):
+            fresh = {}
+        meta = fresh.setdefault("_meta", {})
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+        for term, count in _glossary_hits_buffer.items():
+            info = meta.get(term)
+            if not isinstance(info, dict):
+                info = {"source": "unknown", "added": now_str, "hits": 0}
+            info["last_used"] = now_str
+            info["hits"] = int(info.get("hits", 0)) + count
+            meta[term] = info
         tmp = glossary_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(glossary, f, ensure_ascii=False, indent=2)
+            _json.dump(fresh, f, ensure_ascii=False, indent=2)
             f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, glossary_path)
+        _glossary_hits_buffer.clear()
     except Exception:
         pass
 

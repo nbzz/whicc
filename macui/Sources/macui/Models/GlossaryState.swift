@@ -25,6 +25,8 @@ final class GlossaryState: ObservableObject {
     @Published var isPaused: Bool = false
     @Published var entries: [GlossaryEntry] = []
     @Published var changes: [GlossaryChange] = []
+    /// 最近一次写 glossary.json 失败原因；成功时为 nil。UI 用来提示「点了保存但没落盘」。
+    @Published var lastWriteError: String?
 
     let glossaryPath: String
     let eventGlossaryPath: String
@@ -289,8 +291,17 @@ final class GlossaryState: ObservableObject {
     }
 
     private func writeGlossaryFile(_ dict: [String: Any]) {
-        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) else { return }
-        try? data.write(to: URL(fileURLWithPath: glossaryPath), options: .atomic)
+        do {
+            let data = try JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys])
+            let url = URL(fileURLWithPath: glossaryPath)
+            let parent = url.deletingLastPathComponent()
+            // 调用创建父目录：打包模式落到 Application Support 时目录可能尚不存在
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            try data.write(to: url, options: .atomic)
+            lastWriteError = nil
+        } catch {
+            lastWriteError = "无法写入词库：\(error.localizedDescription)\n路径：\(glossaryPath)"
+        }
     }
 
     private func fileMtime(_ path: String) -> TimeInterval? {

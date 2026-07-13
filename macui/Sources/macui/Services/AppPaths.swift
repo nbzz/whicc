@@ -60,9 +60,42 @@ enum AppPaths {
         return projectRoot + "/src"
     }
 
-    /// 术语表 JSON 路径 (whicc.py / BackendLauncher 都用 srcDir/glossary.json)
+    /// 应用可写数据目录（模型 / 词库等）。打包进 /Applications 后
+    /// `Contents/Resources` 只读，不能往里面写 glossary.json。
+    static var supportDir: String {
+        let path = NSHomeDirectory() + "/Library/Application Support/whicc"
+        try? FileManager.default.createDirectory(
+            atPath: path, withIntermediateDirectories: true)
+        return path
+    }
+
+    /// 可写词库目录。
+    /// - 打包模式：`~/Library/Application Support/whicc`（首次从 bundle 种子拷贝）
+    /// - 开发模式：仓库 `src/`（与历史行为一致）
+    static var glossaryDir: String {
+        if isBundledApp {
+            seedUserGlossaryIfNeeded()
+            return supportDir
+        }
+        return srcDir
+    }
+
+    /// 术语表 JSON 路径（macui / translate_stream / glossary_refresher 共用）
     static var glossaryPath: String {
-        srcDir + "/glossary.json"
+        glossaryDir + "/glossary.json"
+    }
+
+    /// 首次启动时把 bundle 内置 glossary.json 拷到可写目录，避免空文件起步。
+    private static func seedUserGlossaryIfNeeded() {
+        let dest = supportDir + "/glossary.json"
+        if FileManager.default.fileExists(atPath: dest) { return }
+        let bundled = srcDir + "/glossary.json"
+        if FileManager.default.fileExists(atPath: bundled) {
+            try? FileManager.default.copyItem(atPath: bundled, toPath: dest)
+            return
+        }
+        let empty = "{\n  \"en2zh\" : {\n\n  },\n  \"zh2en\" : {\n\n  },\n  \"_meta\" : {\n\n  }\n}\n"
+        try? empty.write(toFile: dest, atomically: true, encoding: .utf8)
     }
 
     /// 是否在 .app bundle 内运行。true → 打包模式
