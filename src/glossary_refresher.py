@@ -266,9 +266,39 @@ def load_glossary() -> dict:
 
 
 def save_glossary(glossary: dict):
-    with open(GLOSSARY_PATH, "w", encoding="utf-8") as f:
+    """原子写盘：先写 .tmp 再 rename，避免 macui 轮询读到半写文件。"""
+    tmp = GLOSSARY_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(glossary, f, ensure_ascii=False, indent=2)
         f.write("\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, GLOSSARY_PATH)
+
+
+def merge_added_into_glossary(added_terms: dict, now_str: str) -> dict:
+    """以磁盘最新词库为底合并本轮新增，缩小多进程覆盖窗口。
+
+    run_once 的 load→Hermes 调用→save 可能耗时几十秒，期间 macui 手动
+    添加/删除、translate_stream 命中计数都可能已落盘。这里重新 load，
+    只把本轮 added_terms 叠加上去再写回：
+      - 不回写内存里的旧快照（不会复活用户刚删的词）
+      - 已存在的 zh 键不覆盖（用户手工条目优先）
+    仍存在极小的 read-modify-write 竞态窗口，但从「分钟级」缩到「毫秒级」。
+    """
+    fresh = load_glossary()
+    zh2en = fresh.setdefault("zh2en", {})
+    en2zh = fresh.setdefault("en2zh", {})
+    meta = fresh.setdefault("_meta", {})
+    for zh, (en, source) in added_terms.items():
+        if zh in zh2en:
+            continue
+        zh2en[zh] = en
+        en2zh[en] = zh
+        meta[zh] = {"source": source, "added": now_str,
+                    "last_used": now_str, "hits": 0}
+    save_glossary(fresh)
+    return fresh
 
 
 def _now_ts() -> str:
@@ -297,24 +327,42 @@ def _log_changes(added: dict[str, tuple[str, str]], removed: list[str]):
         pass
 
 
+def _is_manual_term(meta: dict, zh_key: str) -> bool:
+    """判断某个 zh 键是否用户手工添加（source=manual）。"""
+    info = meta.get(zh_key)
+    return isinstance(info, dict) and info.get("source") == "manual"
+
+
 def cleanup_glossary(glossary: dict) -> list[str]:
-    """清理过期和无效术语。返回删除的术语列表。"""
+    """清理过期和无效术语。返回删除的术语列表。
+
+    手工术语（source=manual）永不自动删除：既不参与过期，也不参与
+    「无效字符」清理——用户可以刻意添加英文↔英文等非常规映射。
+    """
     now = time.time()
     meta = glossary.get("_meta", {})
     zh2en = glossary.get("zh2en", {})
     en2zh = glossary.get("en2zh", {})
     removed = []
 
-    # 清理无效术语（zh 不含 CJK 或含拉丁字符的脏数据）
+    # 清理无效术语（zh 不含 CJK 或含拉丁字符的脏数据）；manual 豁免
     for zh in list(zh2en.keys()):
+        if _is_manual_term(meta, zh):
+            continue
         if not _is_cjk(zh) or re.search(r'[a-zA-Z]', zh):
             removed.append(zh)
     for en in list(en2zh.keys()):
+        # en2zh 的值是对应 zh 键，用它反查 meta 判断是否 manual
+        if _is_manual_term(meta, en2zh.get(en, "")):
+            continue
         if _is_cjk(en) or not re.search(r'[a-zA-Z]', en):
             removed.append(en)
 
     for term, info in list(meta.items()):
         source = info.get("source", "lm")
+        # 手工术语不过期（映射里没有 manual，落到 EXPIRE_LM 一天就没了）
+        if source == "manual":
+            continue
         last_used_str = info.get("last_used", info.get("added", ""))
         hits = info.get("hits", 0)
 
@@ -628,7 +676,10 @@ def run_once() -> tuple[dict, int]:
         print(f"[refresher] 过滤掉 {skipped} 个无效术语", flush=True)
 
     if added_count >= MIN_NEW_TO_WRITE:
-        save_glossary(glossary)
+        # 调用合并写入：load→Hermes→save 之间隔了几十秒，期间 macui /
+        # translate_stream 可能已写盘；直接 save 旧内存副本会覆盖丢失
+        # 它们的改动，必须以磁盘最新版为底、只叠加本轮新增。
+        merge_added_into_glossary(added_terms, now_str)
         save_meta(len(candidates), len(translated), added_count, f"hermes:{hermes_ok}", scene)
         total = len(zh2en) + len(en2zh)
         print(f"[refresher] 词库 +{added_count}（hermes:{hermes_ok}），共 {total} 条", flush=True)
