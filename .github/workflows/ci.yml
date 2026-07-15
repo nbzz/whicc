@@ -167,15 +167,13 @@ jobs:
           errors = []
           for sf in strings_files:
               keys = parse_keys(sf)
-              # Built-in keys that are NOT Chinese source literals
-              # (e.g. Pane.localizedTitle returns English literals like
-              # "Appearance" — those don't appear as Text("Appearance") in
-              # source). Skip them.
+              # Keys that are NOT verbatim Chinese source literals, including
+              # built-in keys and Swift interpolation placeholders.
               non_source = {
                   "Appearance", "Speech Recognition Model", "Translation Model", "Hermes",
                   "settings_window_title", "menu_preferences", "menu_quit", "menu_file",
                   "menu_close", "menu_edit", "menu_edit_cut", "menu_edit_copy",
-                  "menu_edit_paste", "menu_edit_select_all",
+                  "menu_edit_paste", "menu_edit_select_all", "%@（未运行）",
               }
               for k in keys:
                   if k in non_source:
