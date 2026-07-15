@@ -87,9 +87,9 @@ The translation node can be **this Mac**, **another Windows PC on your home netw
 
 ### Normal users (recommended)
 
-1. Go to [Releases](../../releases) and download the latest `whicc.app.zip`
-2. Unzip and drag `whicc.app` to `/Applications/`
-3. Double-click to launch
+1. Go to [Releases](../../releases) and download the latest `whicc-v1.0.0.dmg`
+2. Double-click the DMG to mount it, then drag `whicc.app` to `/Applications/`
+3. On first launch, right-click `whicc.app` and choose **Open**
 
 On first launch the Settings panel will open automatically (or press `⌘,` or click the gear icon):
 
